@@ -1,0 +1,18 @@
+# Só o código entra na imagem; ambiente local, testes e segredos ficam de fora
+.venv/
+venv/
+__pycache__/
+**/*.pyc
+.git/
+.gitignore
+.vscode/
+.idea/
+.claude/
+.env
+.env.*
+**/*.zip
+static/_teste.zip
+Dockerfile
+.dockerignore
+compose.yaml
+iniciar.bat

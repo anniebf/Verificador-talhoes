@@ -1,0 +1,898 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Verificador de Talhões</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+/* Layout: ferramenta de uma coluna larga — envio + passos no topo, resumo em números, lista por fazenda à esquerda e desenho do talhão fixo à direita */
+:root {
+  --bg: #f3f5ef;
+  --surface: #ffffff;
+  --sunken: #e8ece2;
+  --ink: #1d2a1f;
+  --muted: #5b6858;
+  --line: #d3d9cb;
+  --accent: #2f6b3a;
+  --accent-ink: #ffffff;
+  --hole: #d1202a;
+  --hole-soft: rgba(209, 32, 42, .14);
+  --part: #c27a00;
+  --part-soft: rgba(194, 122, 0, .16);
+  --bad: #7b3fa0;
+  --bad-soft: rgba(123, 63, 160, .14);
+  --field: rgba(47, 107, 58, .16);
+  --road: #2f62a8;
+  --road-soft: rgba(47, 98, 168, .14);
+  --ok: #2f6b3a;
+  --f-display: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141a15; --surface: #1c241d; --sunken: #232d24; --ink: #e5ebe1; --muted: #9aa797;
+    --line: #334034; --accent: #7fc38b; --accent-ink: #10180f;
+    --hole: #ff5c63; --hole-soft: rgba(255, 92, 99, .18); --part: #f0a92e; --part-soft: rgba(240, 169, 46, .18);
+    --bad: #c49be0; --bad-soft: rgba(196, 155, 224, .18); --field: rgba(127, 195, 139, .16); --ok: #7fc38b;
+    --road: #82b4f2; --road-soft: rgba(130, 180, 242, .18);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141a15; --surface: #1c241d; --sunken: #232d24; --ink: #e5ebe1; --muted: #9aa797;
+  --line: #334034; --accent: #7fc38b; --accent-ink: #10180f;
+  --hole: #ff5c63; --hole-soft: rgba(255, 92, 99, .18); --part: #f0a92e; --part-soft: rgba(240, 169, 46, .18);
+  --bad: #c49be0; --bad-soft: rgba(196, 155, 224, .18); --field: rgba(127, 195, 139, .16); --ok: #7fc38b;
+    --road: #82b4f2; --road-soft: rgba(130, 180, 242, .18);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { color-scheme: light; }
+body { margin: 0; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 28px 64px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: flex; flex-direction: column; gap: 24px; }
+h1, h2, h3 { font-family: var(--f-display); margin: 0; text-wrap: balance; letter-spacing: .01em; }
+h1 { font-size: clamp(30px, 5vw, 42px); font-weight: 700; line-height: 1.05; }
+h2 { font-size: 22px; font-weight: 600; }
+p { margin: 0; }
+.lede { color: var(--muted); max-width: 62ch; margin-top: 6px; }
+.eyebrow { font-family: var(--f-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+
+/* envio */
+.intake { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; }
+.drop { position: relative; border: 2px dashed var(--line); border-radius: 14px; background: var(--surface); padding: 28px 24px; display: flex; flex-direction: column; align-items: flex-start; gap: 12px; transition: border-color .15s, background .15s; }
+.drop.over { border-color: var(--accent); background: var(--sunken); }
+.drop h2 { font-size: 26px; }
+.drop .hint { color: var(--muted); font-size: 14px; }
+.btn { font: 600 15px var(--f-body); border: 0; border-radius: 8px; padding: 11px 18px; cursor: pointer; background: var(--accent); color: var(--accent-ink); display: inline-flex; align-items: center; gap: 8px; }
+.btn:hover { filter: brightness(1.08); }
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); padding: 8px 12px; font-size: 13px; }
+.btn.ghost:hover { background: var(--sunken); filter: none; }
+.btn:focus-visible, input:focus-visible, .chip:focus-visible, .row:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+#file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.status { font-size: 14px; min-height: 21px; }
+.status.err { color: var(--hole); font-weight: 500; }
+
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; background: var(--sunken); border-radius: 14px; padding: 22px 22px; }
+.steps li { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; align-items: start; }
+.steps .n { width: 30px; height: 30px; border-radius: 50%; background: var(--surface); border: 1px solid var(--line); display: grid; place-items: center; font: 600 15px var(--f-display); color: var(--accent); }
+.steps b { display: block; font-weight: 600; }
+.steps span { color: var(--muted); font-size: 14px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+.legend .tag { white-space: normal; }
+
+/* chips de erro */
+.tag { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.tag::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: currentColor; }
+.tag.hole { color: var(--hole); background: var(--hole-soft); }
+.tag.part { color: var(--part); background: var(--part-soft); }
+.tag.bad { color: var(--bad); background: var(--bad-soft); }
+.tag.road { color: var(--road); background: var(--road-soft); }
+.tag.road::before { border-radius: 50%; }
+.warnbox { border: 1px solid var(--road); background: var(--road-soft); color: var(--ink); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+.warnbox b { color: var(--road); }
+
+/* resumo */
+.banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; padding: 12px 16px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+.banner .file { font-family: var(--f-mono); font-size: 13px; color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+.example-flag { font: 600 12px var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--part); background: var(--part-soft); padding: 3px 8px; border-radius: 6px; }
+.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px; }
+.stat .v { font: 700 34px/1.1 var(--f-display); font-variant-numeric: tabular-nums; }
+.stat .k { font-size: 13px; color: var(--muted); }
+.stat.main { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.stat.main .k { color: var(--bg); opacity: .75; }
+.stat .v.hole { color: var(--hole); } .stat .v.part { color: var(--part); } .stat .v.road { color: var(--road); }
+
+/* resultado */
+.results { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; align-items: start; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.search { flex: 1 1 220px; min-width: 0; font: 15px var(--f-body); padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.chip { font: 500 13px var(--f-body); padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.farms { display: flex; flex-direction: column; gap: 10px; }
+details.farm { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+details.farm > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 16px; }
+details.farm > summary::-webkit-details-marker { display: none; }
+.farm-name { font: 600 18px var(--f-display); min-width: 0; overflow-wrap: anywhere; }
+.farm-name small { font: 400 13px var(--f-body); color: var(--muted); margin-left: 6px; }
+.farm-count { font: 500 13px var(--f-mono); color: var(--muted); white-space: nowrap; display: flex; align-items: center; gap: 8px; }
+.farm-count::after { content: "▸"; transition: transform .15s; color: var(--muted); }
+details[open] .farm-count::after { transform: rotate(90deg); }
+.row { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 16px; border-top: 1px solid var(--line); cursor: pointer; background: none; border-left: 0; border-right: 0; border-bottom: 0; width: 100%; text-align: left; color: inherit; font: inherit; }
+.row:hover { background: var(--sunken); }
+.row.sel { background: var(--sunken); box-shadow: inset 4px 0 0 var(--accent); }
+.row .tal { font: 600 16px var(--f-display); }
+.row .tal small { display: block; font: 400 12px var(--f-body); color: var(--muted); }
+.row .tags { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.row .ha { font: 13px var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.empty { padding: 28px; text-align: center; color: var(--muted); background: var(--surface); border: 1px dashed var(--line); border-radius: 12px; }
+.allok { padding: 28px; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.allok h3 { font-size: 24px; color: var(--ok); }
+
+.detail { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.detail h3 { font-size: 24px; font-weight: 700; }
+.detail .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.map { width: 100%; aspect-ratio: 1 / 1; max-width: 100%; background: var(--sunken); border-radius: 10px; display: block; }
+.issues { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.issues li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 13px; padding: 6px 8px; border-radius: 6px; background: var(--sunken); }
+.issues .coord { font-family: var(--f-mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.issues .sz { font-family: var(--f-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.copybar { display: flex; flex-wrap: wrap; gap: 8px; }
+.note { font-size: 13px; color: var(--muted); }
+.qgis { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.qgis code { display: block; font: 13px/1.5 var(--f-mono); background: var(--sunken); padding: 10px 12px; border-radius: 8px; overflow-x: auto; white-space: pre; }
+.toast { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 8px; font-size: 14px; z-index: 20; }
+.busy { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .busy { animation: none; } }
+
+/* abas e mapa */
+.tabs { display: flex; gap: 4px; border-bottom: 2px solid var(--line); }
+.tab { font: 600 17px var(--f-display); letter-spacing: .02em; padding: 10px 18px; border: 0; background: none; color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent; margin-bottom: -2px; display: inline-flex; align-items: center; gap: 8px; }
+.tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.tab:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.tab .count { font: 500 12px var(--f-mono); background: var(--sunken); color: var(--muted); padding: 1px 7px; border-radius: 999px; }
+.mapview { display: flex; flex-direction: column; gap: 10px; }
+.maptools { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+.maptools select { font: 15px var(--f-body); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); max-width: 100%; min-width: 0; flex: 1 1 240px; }
+.maptools label { font-size: 14px; display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.mapkey { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); }
+.mapkey i { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 5px; border: 2px solid; }
+#map { height: min(72vh, 760px); min-height: 420px; border-radius: 12px; border: 1px solid var(--line); background: #1b1f1c; }
+.mapmsg { padding: 40px 20px; text-align: center; color: var(--muted); background: var(--surface); border: 1px dashed var(--line); border-radius: 12px; }
+.leaflet-popup-content { font: 14px/1.45 var(--f-body); margin: 12px 14px; }
+.leaflet-popup-content b.t { font: 700 18px var(--f-display); display: block; }
+.leaflet-popup-content .tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 8px; }
+.farmbar { padding: 8px 16px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
+.btn.small { padding: 6px 10px; font-size: 13px; }
+
+/* aviso de vértices e aba de correção */
+.vwarn { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; justify-content: space-between; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--part); background: var(--part-soft); }
+.vwarn p { margin: 0; max-width: 75ch; }
+.vwarn b { color: var(--part); }
+.fixwrap { display: flex; flex-direction: column; gap: 16px; }
+.stepper { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.step { text-align: left; border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 10px 12px; cursor: pointer; display: flex; gap: 10px; align-items: center; font: inherit; color: inherit; min-width: 0; }
+.step .n { flex: 0 0 30px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--sunken); font: 700 15px var(--f-display); }
+.step b { display: block; font: 600 16px var(--f-display); }
+.step small { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.step[aria-current="step"] { border-color: var(--accent); box-shadow: inset 0 -3px 0 var(--accent); }
+.step[aria-current="step"] .n { background: var(--accent); color: var(--accent-ink); }
+.step.done .n { background: var(--ok); color: var(--accent-ink); }
+.step:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.fixgrid { display: grid; grid-template-columns: minmax(0, 1fr) 440px; gap: 20px; align-items: start; }
+.fixmain { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.fixside { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px); display: flex; flex-direction: column; gap: 8px; }
+#fixmap { height: 480px; border-radius: 12px; border: 1px solid var(--line); background: #1b1f1c; }
+.explain { background: var(--sunken); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+.explain h3 { font-size: 22px; }
+.explain p { max-width: 75ch; }
+.controls { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-end; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.field select { font: 15px var(--f-body); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.radios { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--ink); }
+.radios label, .opts label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.sumline { font-size: 14px; padding: 10px 14px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: space-between; }
+.sumline .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+.fixlist { display: flex; flex-direction: column; gap: 6px; max-height: 640px; overflow-y: auto; padding-right: 4px; }
+.fixrow { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); cursor: pointer; }
+.fixrow:hover { background: var(--sunken); }
+.fixrow.sel { outline: 2px solid var(--accent); outline-offset: -1px; }
+.fixrow input[type="checkbox"], .opts input { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+.fixrow .t { font: 600 16px var(--f-display); }
+.fixrow .s { font-size: 12.5px; color: var(--muted); }
+.fixrow .num { font: 13px var(--f-mono); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.fixrow .badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.badge { font: 600 11.5px var(--f-body); padding: 2px 7px; border-radius: 6px; background: var(--sunken); color: var(--muted); }
+.badge.warn { color: var(--part); background: var(--part-soft); }
+.badge.new { color: var(--road); background: var(--road-soft); }
+.badge.bad { color: var(--hole); background: var(--hole-soft); }
+.farmhead { font: 600 12px var(--f-mono); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-top: 8px; }
+.opts { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13.5px; }
+.navbar { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: center; padding-top: 12px; border-top: 1px solid var(--line); }
+.navbar .note { flex: 1 1 200px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.card h4 { margin: 0; font: 600 19px var(--f-display); }
+.loading { padding: 28px; text-align: center; color: var(--muted); background: var(--surface); border: 1px dashed var(--line); border-radius: 12px; }
+.statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.tablewrap { overflow-x: auto; max-height: 420px; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+table.changes { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13px; }
+table.changes th, table.changes td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.changes th { position: sticky; top: 0; background: var(--sunken); font-weight: 600; }
+table.changes td.n { font-family: var(--f-mono); text-align: right; white-space: nowrap; }
+.okbox { border: 1px solid var(--ok); background: var(--field); border-radius: 10px; padding: 12px 14px; }
+.fixmapbar { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.fixmapbar b { font: 600 17px var(--f-display); }
+.fixmapbar .btns { display: flex; gap: 6px; }
+.fixgrid.wide { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
+.fixgrid.wide #fixmap { height: min(78vh, 820px); }
+table.changes tbody tr { cursor: pointer; }
+table.changes tbody tr:hover, table.changes tbody tr.sel { background: var(--sunken); }
+/* legenda dentro do mapa: fica sobre a imagem de satélite, então tem cores próprias */
+.legenda { background: rgba(18, 22, 19, .88); color: #f2f5ef; padding: 8px 10px; border-radius: 8px; font: 12px/1.7 var(--f-body); max-width: 230px; }
+.legenda b { display: block; font-size: 12.5px; margin-bottom: 2px; }
+.legenda { cursor: pointer; }
+.legenda b::after { content: "  ▾"; opacity: .7; }
+.legenda.mini b::after { content: "  ▸"; }
+.legenda.mini > :not(b) { display: none; }
+.legenda.mini b { margin: 0; }
+.legenda i { display: inline-block; width: 13px; height: 10px; margin-right: 6px; border: 2px solid; border-radius: 2px; vertical-align: -1px; }
+.legenda i.p { border-radius: 50%; width: 11px; height: 11px; }
+.leaflet-control-layers { font: 13px var(--f-body); }
+
+@media (max-width: 900px) {
+  .fixgrid { grid-template-columns: minmax(0, 1fr); }
+  .fixside { position: static; order: -1; }
+  #fixmap { height: 340px; }
+  .stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .intake, .results { grid-template-columns: minmax(0, 1fr); }
+  .detail { position: static; }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat.main { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  .row { grid-template-columns: 80px minmax(0, 1fr); }
+  .row .ha { grid-column: 2; text-align: left; }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Shapefile de talhões · QGIS</div>
+    <h1>Verificador de Talhões</h1>
+    <p class="lede">Envie o .zip do shapefile e veja na hora quais talhões têm buracos dentro ou pedaços soltos, quais parecem cortados por estradas, em qual fazenda estão e onde ficam no mapa.</p>
+  </header>
+
+  <section class="intake">
+    <label class="drop" id="drop" for="file">
+      <h2>Arraste o arquivo .zip aqui</h2>
+      <p class="hint">O .zip precisa ter os arquivos <b>.shp</b> e <b>.dbf</b> (os mesmos que você abre no QGIS). O arquivo vai para o servidor só para a verificação e não fica guardado.</p>
+      <span class="btn" role="button" tabindex="0" id="pick">Escolher arquivo .zip</span>
+      <input type="file" id="file" accept=".zip,application/zip">
+      <p class="status" id="status" aria-live="polite"></p>
+    </label>
+
+    <ol class="steps">
+      <li><span class="n">1</span><div><b>Envie o .zip</b><span>Clique no botão ou arraste o arquivo para o quadro.</span></div></li>
+      <li><span class="n">2</span><div><b>Veja o resumo</b><span>Quantos talhões têm erro e em quantas fazendas.</span></div></li>
+      <li><span class="n">3</span><div><b>Clique num talhão</b><span>O desenho mostra onde está cada erro. Na aba Mapa você vê o talhão na imagem de satélite e dá zoom.</span></div></li>
+      <li><span class="n">4</span><div><b>Corrija e baixe</b><span>Na aba Corrigir e baixar você simplifica e conserta os erros, aprovando cada mudança, e baixa o shapefile novo.</span></div>
+      </li>
+      <li><span class="n">?</span><div><b>O que cada cor quer dizer</b>
+        <div class="legend">
+          <span class="tag hole">Buraco: área recortada dentro do talhão</span>
+          <span class="tag part">Parte solta: pedaço separado do talhão</span>
+          <span class="tag bad">Geometria inválida ou vazia</span>
+          <span class="tag road">Possível estrada: faixa reta e estreita que corta o talhão. É só um aviso e pode não ser erro</span>
+        </div></div></li>
+    </ol>
+  </section>
+
+  <div class="banner" id="banner"></div>
+  <div class="vwarn" id="vwarn" hidden></div>
+  <section class="stats" id="stats"></section>
+
+  <div class="tabs" role="tablist" aria-label="Como ver o resultado">
+    <button class="tab" role="tab" id="tabList" aria-selected="true" aria-controls="viewList">Lista</button>
+    <button class="tab" role="tab" id="tabMap" aria-selected="false" aria-controls="viewMap">Mapa <span class="count">satélite</span></button>
+    <button class="tab" role="tab" id="tabFix" aria-selected="false" aria-controls="viewFix">Corrigir e baixar <span class="count" id="fixCount">3 etapas</span></button>
+  </div>
+
+  <section class="results" id="viewList" role="tabpanel" aria-labelledby="tabList">
+    <div>
+      <div class="toolbar">
+        <input class="search" id="q" type="search" placeholder="Buscar fazenda ou talhão…" aria-label="Buscar fazenda ou talhão">
+        <button class="chip" data-f="all" aria-pressed="true">Todos</button>
+        <button class="chip" data-f="hole" aria-pressed="false">Com buracos</button>
+        <button class="chip" data-f="part" aria-pressed="false">Com partes soltas</button>
+        <button class="chip" data-f="road" aria-pressed="false">Possíveis estradas</button>
+        <button class="btn ghost" id="copyAll" type="button">Baixar planilha (.csv)</button>
+      </div>
+      <div class="farms" id="farms"></div>
+    </div>
+    <aside class="detail" id="detail" aria-live="polite"></aside>
+  </section>
+
+  <section class="mapview" id="viewMap" role="tabpanel" aria-labelledby="tabMap" hidden>
+    <div class="maptools">
+      <select id="farmSel" aria-label="Ir para uma fazenda"><option value="">Ir para uma fazenda…</option></select>
+      <label><input type="checkbox" id="showOk" checked> Mostrar talhões sem problema</label>
+    </div>
+    <div class="mapkey">
+      <span><i style="border-color:#ff3b30;background:rgba(255,59,48,.35)"></i>Talhão com erro</span>
+      <span><i style="border-color:#3d9bff;background:rgba(61,155,255,.3)"></i>Só aviso de possível estrada</span>
+      <span><i style="border-color:#ffffff;background:rgba(255,255,255,.08)"></i>Sem problema</span>
+      <span><i style="border-color:#ffe600;background:transparent"></i>Selecionado</span>
+    </div>
+    <div id="map"></div>
+    <p class="note">Use a roda do mouse ou os botões + e − para dar zoom. Clique num talhão para ver o que ele tem; no canto de cima você troca entre satélite e mapa de ruas.</p>
+  </section>
+
+  <section class="fixwrap" id="viewFix" role="tabpanel" aria-labelledby="tabFix" hidden>
+    <div id="fixIntro"></div>
+    <nav class="stepper" id="fixSteps" aria-label="Etapas da correção"></nav>
+    <div class="fixgrid" id="fixGrid">
+      <div class="fixmain" id="fixMain"></div>
+      <aside class="fixside">
+        <div class="fixmapbar"><b id="fixMapTitulo">Mapa</b>
+          <span class="btns"><button type="button" class="btn ghost small" id="fixGeral" hidden>← Ver todos</button>
+          <button type="button" class="btn ghost small" id="fixAmpliar" aria-pressed="false">Ampliar mapa</button></span></div>
+        <div id="fixmap"></div>
+        <p class="note" id="fixCap">Clique num item da lista para ver ele aqui.</p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="qgis">
+    <h2>Selecionar todos de uma vez no QGIS</h2>
+    <p class="note">Na tabela de atributos da camada, clique em “Selecionar feições usando uma expressão” (ícone ε), cole a expressão abaixo e clique em Selecionar.</p>
+    <code id="exprAll">num_rings($geometry) - num_geometries($geometry) &gt; 0
+OR num_geometries($geometry) &gt; 1</code>
+    <div class="copybar"><button class="btn ghost" type="button" data-copy="exprAll">Copiar expressão</button></div>
+  </section>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+// ---------- leitura do shapefile ----------
+function parseDBF(buf, encoding) {
+  const dv = new DataView(buf), u8 = new Uint8Array(buf);
+  const n = dv.getUint32(4, true), hlen = dv.getUint16(8, true), rlen = dv.getUint16(10, true);
+  let dec; try { dec = new TextDecoder(encoding || 'latin1'); } catch (e) { dec = new TextDecoder('latin1'); }
+  const fields = [];
+  for (let p = 32; p < hlen - 1 && u8[p] !== 0x0D; p += 32) {
+    let name = ''; for (let i = 0; i < 11 && u8[p + i]; i++) name += String.fromCharCode(u8[p + i]);
+    fields.push({ name, type: String.fromCharCode(u8[p + 11]), len: u8[p + 16] });
+  }
+  const rows = [];
+  for (let r = 0; r < n; r++) {
+    let pos = hlen + r * rlen + 1; const row = {};
+    for (const f of fields) { row[f.name] = dec.decode(u8.subarray(pos, pos + f.len)).trim(); pos += f.len; }
+    rows.push(row);
+  }
+  return { fields, rows };
+}
+
+function parseSHP(buf) {
+  const dv = new DataView(buf), out = [];
+  let p = 100;
+  while (p + 8 <= buf.byteLength) {
+    const clen = dv.getInt32(p + 4, false) * 2, c = p + 8;
+    const type = dv.getInt32(c, true);
+    if (type === 0 || ![5, 15, 25].includes(type)) { out.push([]); p = c + clen; continue; }
+    const nparts = dv.getInt32(c + 36, true), npts = dv.getInt32(c + 40, true);
+    const starts = []; for (let i = 0; i < nparts; i++) starts.push(dv.getInt32(c + 44 + 4 * i, true));
+    starts.push(npts);
+    const off = c + 44 + 4 * nparts, rings = [];
+    for (let i = 0; i < nparts; i++) {
+      const ring = [];
+      for (let k = starts[i]; k < starts[i + 1]; k++) ring.push([dv.getFloat64(off + 16 * k, true), dv.getFloat64(off + 16 * k + 8, true)]);
+      rings.push(ring);
+    }
+    out.push(rings); p = c + clen;
+  }
+  return out;
+}
+
+// ---------- análise ----------
+const signedArea = r => { let s = 0; for (let i = 0; i < r.length - 1; i++) s += r[i][0] * r[i + 1][1] - r[i + 1][0] * r[i][1]; return s / 2; };
+const centroid = r => { let x = 0, y = 0; const n = r.length - 1 || 1; for (let i = 0; i < n; i++) { x += r[i][0]; y += r[i][1]; } return [x / n, y / n]; };
+
+function ringHa(r, geographic) {
+  if (!geographic) return Math.abs(signedArea(r)) / 1e4;
+  const lat = centroid(r)[1], kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110574;
+  return Math.abs(signedArea(r)) * kx * ky / 1e4;
+}
+
+// mesma regra do analise.py: faixa de até 20 m de largura, 100 m de comprimento e 20x mais comprida que larga
+function roadInHole(r, geographic) {
+  const lat = centroid(r)[1], kx = geographic ? 111320 * Math.cos(lat * Math.PI / 180) : 1, ky = geographic ? 110574 : 1;
+  const m = r.map(([x, y]) => [x * kx, y * ky]);
+  let per = 0; for (let i = 0; i < m.length - 1; i++) per += Math.hypot(m[i + 1][0] - m[i][0], m[i + 1][1] - m[i][1]);
+  if (!per) return null;
+  const largura = 2 * Math.abs(signedArea(m)) / per, comprimento = per / 2;
+  return largura <= 20 && comprimento >= 100 && comprimento >= 20 * Math.max(largura, 0.1)
+    ? { largura: Math.round(largura * 10) / 10, comprimento: Math.round(comprimento) } : null;
+}
+
+function recount(res) {
+  res.nHoles = res.items.reduce((s, i) => s + errHoles(i).length, 0);
+  res.nExtra = res.items.reduce((s, i) => s + errExtra(i).length, 0);
+  res.nRoads = res.items.reduce((s, i) => s + roads(i).length, 0);
+  res.nInvalid = res.items.filter(i => i.invalid).length;
+  return res;
+}
+
+function pickField(fields, names) {
+  const up = fields.map(f => f.name.toUpperCase());
+  for (const n of names) { const i = up.indexOf(n); if (i >= 0) return fields[i]; }
+  return null;
+}
+
+function analyze({ fields, rows, geoms, geographic, fileName }) {
+  const fTal = pickField(fields, ['TALHAO', 'TALHÃO', 'ID_TALHAO', 'COD_TALHAO', 'TAL', 'NOME']) || fields[0];
+  const fFaz = pickField(fields, ['FAZ', 'COD_FAZ', 'CD_FAZ', 'ID_FAZ', 'FAZENDA', 'DE_FAZ']);
+  const fFazNome = pickField(fields, ['FAZENDA', 'DE_FAZ', 'NOME_FAZ', 'NM_FAZ']);
+  const fSetor = pickField(fields, ['SETOR']);
+  const fHa = pickField(fields, ['HA', 'AREA', 'AREA_HA']);
+  const clean = v => (v == null || v === '' || /^null$/i.test(v)) ? '' : v;
+  const items = [];
+  rows.forEach((row, idx) => {
+    const g = geoms[idx] || [];
+    let outers = g.filter(r => signedArea(r) < 0), holes = g.filter(r => signedArea(r) > 0);
+    let invalid = '';
+    if (!g.length) invalid = 'Sem desenho (geometria vazia)';
+    else if (!outers.length) { invalid = 'Contorno com sentido invertido'; outers = holes; holes = []; }
+    const outerHa = outers.map(r => ringHa(r, geographic));
+    const main = outerHa.indexOf(Math.max(...outerHa, 0));
+    const extra = outers.map((r, i) => ({ r, ha: outerHa[i], i })).filter(o => o.i !== main);
+    if (!holes.length && !extra.length && !invalid) return;
+    const holeList = holes.map(r => ({ r, ha: ringHa(r, geographic), c: centroid(r), estrada: roadInHole(r, geographic) }));
+    items.push({
+      idx, geom: g, outers, main,
+      faz: clean(fFaz && row[fFaz.name]) || 'Sem fazenda',
+      fazNome: fFazNome && fFazNome !== fFaz ? clean(row[fFazNome.name]) : '',
+      tal: clean(row[fTal.name]) || `Linha ${idx + 1}`,
+      setor: fSetor ? clean(row[fSetor.name]) : '',
+      ha: fHa ? clean(row[fHa.name]) : '',
+      holes: holeList,
+      extra: extra.map(o => ({ r: o.r, ha: o.ha, c: centroid(o.r), estrada: null })),
+      invalid,
+    });
+  });
+  const farms = new Map();
+  for (const it of items) { if (!farms.has(it.faz)) farms.set(it.faz, []); farms.get(it.faz).push(it); }
+  const allFarms = new Set(rows.map(r => clean(fFaz && r[fFaz.name]) || 'Sem fazenda'));
+  return recount({ fileName, total: rows.length, items, farms, geographic, totalFarms: allFarms.size, fieldTal: fTal, fieldFaz: fFaz });
+}
+
+// XMLHttpRequest em vez de fetch: só ele informa quanto do arquivo já foi enviado
+function readZip(file, aviso) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'api/verificar');
+    xhr.responseType = 'json';
+    xhr.timeout = 10 * 60 * 1000;
+    const analisando = () => aviso('Arquivo enviado. Analisando os talhões…');
+    xhr.upload.onprogress = e => {
+      if (!e.lengthComputable) return;
+      e.loaded < e.total ? aviso(`Enviando o arquivo… ${Math.round(e.loaded / e.total * 100)}%`) : analisando();
+    };
+    xhr.upload.onload = analisando;
+    xhr.onload = () => {
+      const data = xhr.response || {};
+      if (xhr.status !== 200) return reject(new Error(data.erro || `O servidor respondeu com erro ${xhr.status}. Tente de novo.`));
+      resolve(prepararResultado(data));
+    };
+    xhr.onerror = () => reject(new Error('A conexão com o servidor caiu. Confira a rede (ou se o servidor está ligado) e tente de novo.'));
+    xhr.ontimeout = () => reject(new Error('O servidor demorou demais para responder. Tente de novo.'));
+    const fd = new FormData(); fd.append('arquivo', file);
+    xhr.send(fd);
+  });
+}
+
+// contornos dos talhões sem problema: chegam depois do resultado, só para os mapas
+async function carregarContornos(res) {
+  try {
+    const r = await fetch(`api/correcao/${res.correcao.sessao}/contornos`);
+    if (!r.ok || state.res !== res) return;
+    res.outros = (await r.json()).outros;
+    mapDirty = true;
+    if (!$('viewMap').hidden) ensureMap();
+    if (window.fixContornos) fixContornos();
+  } catch (e) { console.warn('Contornos não carregados', e); }
+}
+
+function prepararResultado(data) {
+  const farms = new Map();
+  for (const it of data.items) {
+    it.geom = [...it.outers, ...it.holes.map(x => x.r)];
+    if (!farms.has(it.faz)) farms.set(it.faz, []);
+    farms.get(it.faz).push(it);
+  }
+  data.farms = farms;
+  return data;
+}
+
+// ---------- tela ----------
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 2) => Number(v).toLocaleString('pt-BR', { minimumFractionDigits: d, maximumFractionDigits: d });
+const errHoles = it => it.holes.filter(h => !h.estrada);
+const errExtra = it => it.extra.filter(e => !e.estrada);
+const roads = it => [...it.holes, ...it.extra].filter(x => x.estrada);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+let state = { res: null, example: true, filter: 'all', q: '', sel: null };
+
+function fazLabel(it) { return it.fazNome ? `${it.fazNome} (cód. ${it.faz})` : `cód. ${it.faz} (sem nome)`; }
+function tagsFor(it) {
+  const t = [], nh = errHoles(it).length, np = errExtra(it).length, nr = roads(it).length;
+  if (nh) t.push(`<span class="tag hole">${nh} ${nh > 1 ? 'buracos' : 'buraco'}</span>`);
+  if (np) t.push(`<span class="tag part">${np} ${np > 1 ? 'partes soltas' : 'parte solta'}</span>`);
+  if (it.invalid) t.push(`<span class="tag bad">${esc(it.invalid)}</span>`);
+  if (nr) t.push(`<span class="tag road">${nr} ${nr > 1 ? 'possíveis estradas' : 'possível estrada'}</span>`);
+  return t.join('');
+}
+const errCount = it => errHoles(it).length + errExtra(it).length + (it.invalid ? 1 : 0);
+const warnCount = it => roads(it).length;
+// etiquetas iguais no desenho e na lista: buracos 1, 2…; partes A, B…; estradas E1, E2…
+function marks(it) {
+  const out = [];
+  errHoles(it).forEach((h, i) => out.push({ kind: 'hole', label: String(i + 1), x: h }));
+  errExtra(it).forEach((e, i) => out.push({ kind: 'part', label: String.fromCharCode(65 + (i % 26)), x: e }));
+  roads(it).forEach((x, i) => out.push({ kind: 'road', label: 'E' + (i + 1), x }));
+  return out;
+}
+
+function render() {
+  const r = state.res;
+  mapDirty = true;
+  if (!$('viewMap').hidden) ensureMap();
+  const c = r.correcao;
+  $('vwarn').hidden = state.example || !c || !c.muitos;
+  if (!$('vwarn').hidden) $('vwarn').innerHTML = `<p><b>${c.muitos.toLocaleString('pt-BR')} talhões têm muitos vértices</b> (mais de ${c.limite.toLocaleString('pt-BR')}, ou um ponto a cada menos de ${c.espacamento} m). O arquivo tem ${c.total.toLocaleString('pt-BR')} vértices no total, o que deixa ele pesado e lento no QGIS.</p>
+    <button class="btn" type="button" id="goFix">Simplificar e corrigir o arquivo</button>`;
+  if ($('goFix')) $('goFix').onclick = () => { setTab('fix'); $('tabFix').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  if (window.fixReset) fixReset();
+  $('banner').innerHTML = state.example
+    ? `<span class="example-flag">Exemplo</span><span class="file">Isto é um exemplo de como fica o resultado. Envie seu .zip para ver os seus talhões.</span>`
+    : `<span class="file">Arquivo: ${esc(r.fileName)} · ${r.total.toLocaleString('pt-BR')} talhões lidos · coordenadas ${r.geographic ? 'em graus (lat/long)' : 'em metros'}</span><button class="btn ghost" type="button" id="again">Verificar outro arquivo</button>`;
+  if (!state.example) $('again').onclick = () => $('file').click();
+  if (!state.example && r.semNome && r.semNome.length) $('banner').insertAdjacentHTML('beforeend',
+    `<span class="file" style="flex-basis:100%;color:var(--part)">${r.semNome.length} ${r.semNome.length > 1 ? 'fazendas com erro estão' : 'fazenda com erro está'} sem nome no arquivo (códigos ${r.semNome.map(esc).join(', ')}). Para mostrar o nome, preencha o arquivo fazendas.csv na pasta do verificador.</span>`);
+
+  const totalErr = r.nHoles + r.nExtra + r.nInvalid;
+  const nErr = r.items.filter(i => errCount(i)).length, nWarn = r.items.filter(i => warnCount(i)).length;
+  $('stats').innerHTML = `
+    <div class="stat main"><span class="v">${totalErr.toLocaleString('pt-BR')}</span><span class="k">erros encontrados</span></div>
+    <div class="stat"><span class="v">${nErr.toLocaleString('pt-BR')}</span><span class="k">talhões com erro, de ${r.total.toLocaleString('pt-BR')}</span></div>
+    <div class="stat"><span class="v road">${r.nRoads.toLocaleString('pt-BR')}</span><span class="k">avisos de possível estrada, em ${nWarn.toLocaleString('pt-BR')} talhões. Podem não ser erro</span></div>
+    <div class="stat"><span class="v">${r.farms.size.toLocaleString('pt-BR')}</span><span class="k">fazendas com erro ou aviso, de ${r.totalFarms.toLocaleString('pt-BR')}</span></div>
+    <div class="stat"><span class="v"><span class="hole">${r.nHoles.toLocaleString('pt-BR')}</span> <span style="color:var(--muted);font-size:22px">/</span> <span class="part">${r.nExtra.toLocaleString('pt-BR')}</span></span><span class="k">buracos / partes soltas${r.nInvalid ? ` · ${r.nInvalid} inválidos` : ''}</span></div>`;
+  renderList();
+  renderDetail();
+}
+
+function visibleItems() {
+  const q = state.q.trim().toLowerCase();
+  return state.res.items.filter(it =>
+    (state.filter === 'all' || ({ hole: errHoles, part: errExtra, road: roads }[state.filter](it).length)) &&
+    (!q || `${it.faz} ${it.fazNome} ${it.tal}`.toLowerCase().includes(q)));
+}
+
+function renderList() {
+  const r = state.res, box = $('farms');
+  if (!r.items.length) {
+    box.innerHTML = `<div class="allok"><h3>Nenhum erro encontrado</h3><p class="note">Os ${r.total.toLocaleString('pt-BR')} talhões têm uma única parte, nenhum buraco e nenhuma estrada.</p></div>`;
+    return;
+  }
+  const vis = visibleItems();
+  if (!vis.length) { box.innerHTML = `<div class="empty">Nenhum talhão bate com essa busca. Apague o texto ou escolha “Todos”.</div>`; return; }
+  const groups = new Map();
+  for (const it of vis) { if (!groups.has(it.faz)) groups.set(it.faz, []); groups.get(it.faz).push(it); }
+  const errsOf = list => list.reduce((s, i) => s + errCount(i), 0);
+  const sorted = [...groups.entries()].sort((a, b) => errsOf(b[1]) - errsOf(a[1]) || b[1].length - a[1].length || String(a[0]).localeCompare(String(b[0]), 'pt-BR', { numeric: true }));
+  const openAll = sorted.length <= 3 || state.q;
+  box.innerHTML = sorted.map(([faz, list], gi) => {
+    list.sort((a, b) => String(a.tal).localeCompare(String(b.tal), 'pt-BR', { numeric: true }));
+    const errs = errsOf(list), warns = list.reduce((s, i) => s + warnCount(i), 0);
+    const hasSel = state.sel && list.includes(state.sel);
+    return `<details class="farm" ${openAll || hasSel || gi === 0 ? 'open' : ''}>
+      <summary><span class="farm-name">${list[0].fazNome ? `${esc(list[0].fazNome)}<small>cód. ${esc(faz)}</small>` : `Fazenda ${esc(faz)}<small>sem nome no arquivo</small>`}</span>
+      <span class="farm-count">${list.length} ${list.length > 1 ? 'talhões' : 'talhão'} · ${errs} ${errs === 1 ? 'erro' : 'erros'}${warns ? ` · ${warns} ${warns > 1 ? 'avisos' : 'aviso'}` : ''}</span></summary>
+      <div class="farmbar"><button type="button" class="btn ghost small" data-farm="${esc(faz)}">Ver fazenda no mapa</button></div>
+      ${list.map(it => `<button type="button" class="row ${it === state.sel ? 'sel' : ''}" data-i="${it.idx}">
+        <span class="tal">Talhão ${esc(it.tal)}${it.setor ? `<small>Setor ${esc(it.setor)}</small>` : ''}</span>
+        <span class="tags">${tagsFor(it)}</span>
+        <span class="ha">${it.ha ? esc(String(it.ha).replace('.', ',')) + ' ha' : ''}</span></button>`).join('')}
+    </details>`;
+  }).join('');
+  box.querySelectorAll('.row').forEach(b => b.onclick = () => {
+    state.sel = state.res.items.find(i => i.idx === +b.dataset.i);
+    box.querySelectorAll('.row').forEach(x => x.classList.toggle('sel', x === b));
+    renderDetail();
+    if (window.matchMedia('(max-width: 900px)').matches) $('detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+function drawSVG(it) {
+  const all = it.geom.flat();
+  if (!all.length) return `<svg class="map" viewBox="0 0 100 100" role="img" aria-label="Sem desenho"><text x="50" y="52" text-anchor="middle" fill="var(--muted)" font-size="6">Sem desenho para mostrar</text></svg>`;
+  const lat0 = all.reduce((s, p) => s + p[1], 0) / all.length;
+  const kx = state.res.geographic ? Math.cos(lat0 * Math.PI / 180) : 1;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const [x, y] of all) { const X = x * kx; minX = Math.min(minX, X); maxX = Math.max(maxX, X); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+  const S = 400, pad = 26, span = Math.max(maxX - minX, maxY - minY) || 1, k = (S - 2 * pad) / span;
+  const ox = pad + ((S - 2 * pad) - (maxX - minX) * k) / 2, oy = pad + ((S - 2 * pad) - (maxY - minY) * k) / 2;
+  const P = ([x, y]) => [(x * kx - minX) * k + ox, (maxY - y) * k + oy];
+  const d = r => 'M' + r.map(p => P(p).map(v => v.toFixed(1)).join(',')).join('L') + 'Z';
+  const body = `<path d="${[...it.outers.map(d), ...it.holes.map(h => d(h.r))].join('')}" fill="var(--field)" fill-rule="evenodd" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>`;
+  const ms = marks(it);
+  const shapes = ms.map(m => `<path d="${d(m.x.r)}" fill="var(--${m.kind}-soft)" stroke="var(--${m.kind})" stroke-width="2.5"${m.kind === 'road' ? ' stroke-dasharray="6 4"' : ''}/>`).join('');
+  const pins = ms.map(m => { const [cx, cy] = P(m.x.c), rr = m.label.length > 1 ? 11 : 9; return `<circle cx="${cx}" cy="${cy}" r="${rr}" fill="var(--${m.kind})"/><text x="${cx}" y="${cy + 3.5}" text-anchor="middle" font-size="10" font-weight="700" fill="var(--surface)">${m.label}</text>`; }).join('');
+  return `<svg class="map" viewBox="0 0 ${S} ${S}" role="img" aria-label="Desenho do talhão ${esc(it.tal)} com os erros marcados">${body}${shapes}${pins}</svg>`;
+}
+
+function coordTxt(c) {
+  return state.res.geographic ? `${c[1].toFixed(6)}, ${c[0].toFixed(6)}` : `${c[0].toFixed(1)}, ${c[1].toFixed(1)}`;
+}
+
+function quote(field, v) { return field && /[NFI]/.test(field.type) && /^-?[\d.]+$/.test(v) ? v : `'${String(v).replace(/'/g, "''")}'`; }
+
+function renderDetail() {
+  const box = $('detail'), r = state.res;
+  if (!r.items.length) { box.innerHTML = `<h3>Tudo certo</h3><p class="note">Não há talhões para mostrar.</p>`; return; }
+  const it = state.sel || (state.sel = r.items.slice().sort((a, b) => errCount(b) - errCount(a))[0]);
+  const expr = `"${r.fieldTal.name}" = ${quote(r.fieldTal, it.tal)}` + (r.fieldFaz && it.faz !== 'Sem fazenda' ? ` AND "${r.fieldFaz.name}" = ${quote(r.fieldFaz, it.faz)}` : '');
+  const holeHa = errHoles(it).reduce((s, h) => s + h.ha, 0), rs = roads(it);
+  box.innerHTML = `
+    <div><h3>Talhão ${esc(it.tal)}</h3><p class="sub">${esc(fazLabel(it))}${it.setor ? ` · Setor ${esc(it.setor)}` : ''}${it.ha ? ` · ${esc(String(it.ha).replace('.', ','))} ha na tabela` : ''}</p></div>
+    <div class="tags" style="display:flex;flex-wrap:wrap;gap:6px">${tagsFor(it)}</div>
+    <button type="button" class="btn" data-show="${it.idx}">Ver no mapa</button>
+    ${drawSVG(it)}
+    ${holeHa ? `<p class="note">Os buracos somam <b>${fmt(holeHa)} ha</b> que estão fora da área do talhão.</p>` : ''}
+    ${rs.length ? `<div class="warnbox"><b>Aviso:</b> ${rs.length > 1 ? `as faixas ${rs.map((_, i) => 'E' + (i + 1)).join(', ')} parecem estradas` : 'a faixa E1 parece uma estrada'} cortando o talhão. Isso <b>pode não ser um erro</b>. Confira na imagem do QGIS: se for estrada ou carreador, pode deixar como está.</div>` : ''}
+    <ul class="issues">
+      ${marks(it).map(m => `<li><span class="tag ${m.kind}">${m.label}</span><span class="coord">${coordTxt(m.x.c)}${m.x.estrada ? ` · ~${fmt(m.x.estrada.largura, 0)} m de largura, ${m.x.estrada.comprimento.toLocaleString('pt-BR')} m de comprimento` : ''}</span><span class="sz">${fmt(m.x.ha)} ha</span></li>`).join('')}
+    </ul>
+    <p class="note">As coordenadas são o centro de cada erro${r.geographic ? ' (latitude, longitude)' : ''}. No QGIS, use a expressão abaixo para selecionar só este talhão.</p>
+    <code style="display:block;font:12.5px/1.5 var(--f-mono);background:var(--sunken);padding:8px 10px;border-radius:8px;overflow-x:auto;white-space:pre" id="exprOne">${esc(expr)}</code>
+    <div class="copybar"><button class="btn ghost" type="button" data-copy="exprOne">Copiar expressão do talhão</button></div>`;
+}
+
+// ---------- mapa ----------
+const MAPCOR = { err: '#ff3b30', warn: '#3d9bff', ok: '#ffffff', part: '#ffb020', sel: '#ffe600' };
+let map = null, mapLayer = null, selLayer = null, mapDirty = true, shapes = new Map();
+const ll = r => r.map(([x, y]) => [y, x]);
+
+function setTab(t) {
+  for (const [k, tab, view] of [['list', 'tabList', 'viewList'], ['map', 'tabMap', 'viewMap'], ['fix', 'tabFix', 'viewFix']]) {
+    $(tab).setAttribute('aria-selected', k === t);
+    $(view).hidden = k !== t;
+  }
+  if (t === 'map') ensureMap();
+  if (t === 'fix' && window.fixShow) fixShow();
+}
+
+function ensureMap() {
+  const box = $('map');
+  if (!state.res.geographic) { box.outerHTML = '<div class="mapmsg" id="map">O mapa precisa de coordenadas em graus (WGS 84 ou SIRGAS 2000). No QGIS, exporte a camada em EPSG:4326 e envie de novo.</div>'; return false; }
+  if (!window.L) { box.outerHTML = '<div class="mapmsg" id="map">Não consegui carregar o mapa. Ele precisa de acesso à internet para baixar as imagens de satélite.</div>'; return false; }
+  if (!map) {
+    map = L.map('map', { preferCanvas: true, zoomControl: true });
+    const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagens © Esri' }).addTo(map);
+    const ruas = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' });
+    L.control.layers({ 'Satélite': sat, 'Mapa de ruas': ruas }).addTo(map);
+    L.control.scale({ imperial: false }).addTo(map);
+    // o Leaflet não deixa o clique do balão chegar no document, então o botão é ligado aqui
+    map.on('popupopen', e => {
+      const b = e.popup.getElement().querySelector('[data-open]');
+      if (b) b.onclick = () => openInList(+b.dataset.open);
+    });
+  }
+  map.invalidateSize();
+  if (mapDirty) buildMap();
+  return true;
+}
+
+function popupFor(it) {
+  if (!it.holes) return `<b class="t">Talhão ${esc(it.tal)}</b>${esc(farmName(it.faz))}<div class="tags"><span class="tag" style="color:var(--ok)">Sem problema</span></div>`;
+  return `<b class="t">Talhão ${esc(it.tal)}</b>${esc(fazLabel(it))}<div class="tags">${tagsFor(it)}</div>
+    ${warnCount(it) && !errCount(it) ? '<p class="note" style="margin:0 0 8px">Só aviso de possível estrada. Pode não ser erro.</p>' : ''}
+    <button type="button" class="btn ghost small" data-open="${it.idx}">Ver detalhes na lista</button>`;
+}
+
+function farmName(faz) {
+  const n = (state.res.nomesFazendas || {})[faz] || (state.res.items.find(i => i.faz === faz) || {}).fazNome;
+  return n ? `${n} (cód. ${faz})` : `Fazenda ${faz}`;
+}
+
+function buildMap() {
+  mapDirty = false;
+  if (mapLayer) mapLayer.remove();
+  if (selLayer) { selLayer.remove(); selLayer = null; }
+  mapLayer = L.layerGroup().addTo(map);
+  shapes = new Map();
+  const okLayer = L.layerGroup();
+  for (const o of state.res.outros || []) {
+    if (!o.r.length) continue;
+    const p = L.polygon(o.r.map(ll), { color: MAPCOR.ok, weight: 1, opacity: .7, fillColor: MAPCOR.ok, fillOpacity: .06 }).bindPopup(() => popupFor(o));
+    okLayer.addLayer(p); shapes.set(o.idx, { layer: p, item: o });
+  }
+  if ($('showOk').checked) okLayer.addTo(mapLayer);
+  mapLayer.okLayer = okLayer;
+  for (const it of state.res.items) {
+    if (!it.outers.length) continue;
+    const bad = errCount(it) > 0, cor = bad ? MAPCOR.err : MAPCOR.warn;
+    const rings = it.outers.map((r, i) => i === it.main ? [ll(r), ...it.holes.map(h => ll(h.r))] : [ll(r)]);
+    const p = L.polygon(rings, { color: cor, weight: 2, fillColor: cor, fillOpacity: bad ? .14 : .12 }).bindPopup(() => popupFor(it)).addTo(mapLayer);
+    for (const m of marks(it)) {
+      const c = m.kind === 'road' ? MAPCOR.warn : m.kind === 'part' ? MAPCOR.part : MAPCOR.err;
+      L.polygon(ll(m.x.r), { color: c, weight: m.kind === 'road' ? 2 : 2.5, dashArray: m.kind === 'road' ? '6 5' : null, fillColor: c, fillOpacity: m.kind === 'road' ? .25 : .55 })
+        .bindTooltip(`${m.label} · ${m.kind === 'road' ? 'possível estrada' : m.kind === 'part' ? 'parte solta' : 'buraco'} · ${fmt(m.x.ha)} ha`).bindPopup(() => popupFor(it)).addTo(mapLayer);
+    }
+    shapes.set(it.idx, { layer: p, item: it });
+  }
+  const all = [...shapes.values()].map(s => s.layer.getBounds());
+  if (all.length) map.fitBounds(all.reduce((a, b) => a.extend(b), L.latLngBounds(all[0].getSouthWest(), all[0].getNorthEast())), { padding: [20, 20] });
+  // lista de fazendas
+  const farms = new Map();
+  for (const s of shapes.values()) { const k = s.item.faz; farms.set(k, (farms.get(k) || 0) + (s.item.holes && errCount(s.item) ? 1 : 0)); }
+  $('farmSel').innerHTML = '<option value="">Ir para uma fazenda…</option>' + [...farms.entries()]
+    .sort((a, b) => farmName(a[0]).localeCompare(farmName(b[0]), 'pt-BR', { numeric: true }))
+    .map(([k, n]) => `<option value="${esc(k)}">${esc(farmName(k))}${n ? ` · ${n} com erro` : ''}</option>`).join('');
+}
+
+function highlight(layers) {
+  if (selLayer) selLayer.remove();
+  selLayer = L.layerGroup(layers.map(l => L.polygon(l.getLatLngs(), { color: MAPCOR.sel, weight: 4, fill: false, interactive: false }))).addTo(map);
+}
+
+function showOnMap(idx) {
+  setTab('map');
+  if (!map) return;
+  const s = shapes.get(idx); if (!s) return;
+  highlight([s.layer]);
+  map.fitBounds(s.layer.getBounds(), { padding: [60, 60], maxZoom: 17 });
+  setTimeout(() => s.layer.openPopup(), 350);
+}
+
+function showFarm(faz) {
+  setTab('map');
+  if (!map) return;
+  const ls = [...shapes.values()].filter(s => s.item.faz === faz).map(s => s.layer);
+  if (!ls.length) return;
+  highlight(ls);
+  map.fitBounds(ls.reduce((b, l) => b.extend(l.getBounds()), ls[0].getBounds()), { padding: [30, 30] });
+  $('farmSel').value = faz;
+}
+
+function openInList(idx) {
+  setTab('list');
+  const it = state.res.items.find(i => i.idx === idx); if (!it) return;
+  state.sel = it; state.filter = 'all'; state.q = '';
+  $('q').value = '';
+  document.querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', x.dataset.f === 'all'));
+  renderList(); renderDetail();
+  const row = document.querySelector(`.row[data-i="${idx}"]`);
+  if (row) { row.closest('details').open = true; row.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+}
+
+$('tabList').onclick = () => setTab('list');
+$('tabMap').onclick = () => setTab('map');
+$('tabFix').onclick = () => setTab('fix');
+$('farmSel').onchange = e => { if (e.target.value) showFarm(e.target.value); };
+$('showOk').onchange = e => { if (!mapLayer) return; e.target.checked ? mapLayer.okLayer.addTo(mapLayer) : mapLayer.removeLayer(mapLayer.okLayer); };
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-show],[data-farm]'); if (!b) return;
+  if (b.dataset.show) showOnMap(+b.dataset.show);
+  else showFarm(b.dataset.farm);
+});
+
+// ---------- cópia ----------
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2200); }
+async function copyText(text, el) {
+  try { await navigator.clipboard.writeText(text); toast('Copiado'); }
+  catch (e) {
+    if (el) { const rg = document.createRange(); rg.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(rg); }
+    toast('Texto selecionado. Use Ctrl+C para copiar.');
+  }
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-copy]'); if (!b) return;
+  const el = $(b.dataset.copy); copyText(el.textContent, el);
+});
+$('copyAll').onclick = () => {
+  const head = ['Fazenda', 'Nome da fazenda', 'Talhão', 'Setor', 'Buracos', 'Área dos buracos (ha)', 'Partes soltas', 'Geometria inválida', 'Possíveis estradas (aviso)', 'Área na tabela (ha)'];
+  const lines = visibleItems().map(it => [it.faz, it.fazNome, it.tal, it.setor, errHoles(it).length, fmt(errHoles(it).reduce((s, h) => s + h.ha, 0)), errExtra(it).length, it.invalid, roads(it).length, String(it.ha).replace('.', ',')].join('\t'));
+  const csv = '\ufeff' + [head, ...lines.map(l => l.split('\t'))].map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(';')).join('\r\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'talhoes_com_erro' + (state.example ? '_exemplo' : '') + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('Planilha baixada');
+};
+
+// ---------- filtros ----------
+document.querySelectorAll('.chip').forEach(c => c.onclick = () => {
+  state.filter = c.dataset.f;
+  document.querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', x === c));
+  renderList();
+});
+$('q').oninput = e => { state.q = e.target.value; renderList(); };
+
+// ---------- envio ----------
+async function handle(file) {
+  if (!file) return;
+  const st = $('status');
+  if (!/\.zip$/i.test(file.name)) { st.className = 'status err'; st.textContent = 'Esse arquivo não é .zip. Compacte os arquivos do shapefile (.shp, .dbf, .shx, .prj) em um .zip e envie de novo.'; return; }
+  const aviso = msg => { st.className = 'status'; st.innerHTML = '<span class="busy"></span>' + esc(msg); };
+  aviso(`Enviando ${file.name}…`);
+  try {
+    const res = await readZip(file, aviso);
+    state = { ...state, res, example: false, sel: null, q: '', filter: 'all' };
+    $('q').value = '';
+    document.querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', x.dataset.f === 'all'));
+    st.textContent = `Pronto. ${res.items.filter(i => errCount(i)).length.toLocaleString('pt-BR')} talhões com erro e ${res.items.filter(i => warnCount(i)).length.toLocaleString('pt-BR')} com aviso de possível estrada.`;
+    render();
+    if (res.contornosDepois) carregarContornos(res);
+    $('banner').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (err) {
+    st.className = 'status err';
+    st.textContent = err.message || 'Não consegui ler esse .zip. Confira se ele não está corrompido e se tem o .shp e o .dbf da camada.';
+    console.error(err);
+  }
+}
+$('file').onchange = e => { handle(e.target.files[0]); e.target.value = ''; };
+$('pick').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); } };
+const drop = $('drop');
+['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => handle(e.dataTransfer.files[0]));
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => e.preventDefault());
+
+// ---------- exemplo inicial (dados inventados) ----------
+function exampleData() {
+  const lon0 = -45.80, lat0 = -12.40, m = 1 / 111320;
+  const rect = (x, y, w, h) => [[x, y], [x, y + h], [x + w, y + h], [x + w, y], [x, y]].map(([a, b]) => [lon0 + a * m, lat0 + b * m]); // horário = contorno
+  const blob = (cx, cy, rx, ry) => { const r = []; for (let i = 0; i <= 18; i++) { const t = (i % 18) / 18 * 2 * Math.PI; r.push([lon0 + (cx + rx * Math.cos(t)) * m, lat0 + (cy + ry * Math.sin(t)) * m]); } return r; }; // anti-horário = buraco
+  const geoms = [
+    [rect(0, 0, 1000, 1000), blob(300, 760, 50, 110), blob(620, 560, 90, 45), blob(480, 470, 60, 40), blob(250, 420, 80, 50), blob(820, 650, 70, 40), blob(200, 120, 35, 30), blob(880, 60, 30, 25)],
+    [rect(0, 0, 900, 700), rect(950, 300, 120, 160)],
+    [rect(0, 0, 800, 800), blob(400, 560, 120, 90), rect(30, 300, 740, 8).reverse()],
+    [rect(0, 0, 700, 600), rect(760, 0, 90, 80), rect(-150, 500, 100, 90), blob(300, 300, 70, 70)],
+    [rect(0, 0, 500, 500)],
+    [rect(0, 0, 600, 400), rect(0, 408, 600, 300)],
+  ];
+  const rows = [
+    { TALHAO: '173', FAZ: '15901', DE_FAZ: 'SANTA RITA (EXEMPLO)', SETOR: '1', ha: '103.69' },
+    { TALHAO: '12', FAZ: '15901', DE_FAZ: 'SANTA RITA (EXEMPLO)', SETOR: '1', ha: '64.91' },
+    { TALHAO: '4', FAZ: '20410', DE_FAZ: 'BOA VISTA (EXEMPLO)', SETOR: '2', ha: '62.86' },
+    { TALHAO: '31', FAZ: '20410', DE_FAZ: 'BOA VISTA (EXEMPLO)', SETOR: '2', ha: '42.43' },
+    { TALHAO: '7', FAZ: '20410', DE_FAZ: 'BOA VISTA (EXEMPLO)', SETOR: '2', ha: '25.00' },
+    { TALHAO: '9', FAZ: '20410', DE_FAZ: 'BOA VISTA (EXEMPLO)', SETOR: '2', ha: '42.00' },
+  ];
+  const fields = ['TALHAO', 'FAZ', 'DE_FAZ', 'SETOR', 'ha'].map(name => ({ name, type: 'C' }));
+  const res = analyze({ fields, rows, geoms, geographic: true, fileName: 'exemplo' });
+  // no servidor o vão entre partes é medido no analise.py; aqui o exemplo marca direto
+  res.items.find(i => i.tal === '9').extra[0].estrada = { largura: 8, comprimento: 600 };
+  return recount(res);
+}
+state.res = exampleData();
+render();
+</script>
+<script src="static/correcao.js"></script>
+</body>
+</html>

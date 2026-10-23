@@ -1,0 +1,19 @@
+# Sobe o verificador com:  docker compose up -d --build
+# Acesso: http://<ip-ou-dns-do-servidor>:8080
+services:
+  verificador:
+    build: .
+    image: verificador-talhoes:latest
+    container_name: verificador-talhoes
+    restart: unless-stopped
+    ports:
+      # aberto para a rede interna; troque a porta da esquerda para usar outra (ex.: "80:8080")
+      - "${PORTA:-8080}:8080"
+    volumes:
+      # editar o fazendas.csv do servidor vale no próximo envio, sem reconstruir a imagem
+      - ./fazendas.csv:/app/fazendas.csv:ro
+    deploy:
+      resources:
+        limits:
+          # cada arquivo em correção fica na memória por 1 hora (até 8 ao mesmo tempo)
+          memory: 2g

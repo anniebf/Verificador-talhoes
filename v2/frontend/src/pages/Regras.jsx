@@ -13,6 +13,15 @@ const ROTULOS = {
   area_min_m2: 'Área mínima (m²)',
   area_max_m2: 'Área máxima (m²)',
   recortar_de: 'Recortar a sobreposição de qual talhão',
+  razao_max_pct: 'Proporção máxima da parte no talhão (%)',
+  area_max_preencher_ha: 'Preencher automaticamente até (ha)',
+  largura_min_m: 'Largura mínima de estrada (m)',
+  largura_max_m: 'Largura máxima de estrada (m)',
+  comprimento_min_m: 'Comprimento mínimo de estrada (m)',
+  cruzamento_min_m: 'Trecho mínimo de estrada dentro do talhão (m)',
+  largura_faixa_m: 'Largura da faixa recortada (m)',
+  propor_recorte: 'Propor recorte da faixa quando houver camada de estradas',
+  distancia_max_m: 'Distância máxima para considerar desconexão (m)',
 }
 const CAMPOS = {
   fazenda: 'Código da fazenda', fazenda_nome: 'Nome da fazenda', aglomerado: 'Aglomerado', talhao: 'Talhão', area_ha: 'Área (ha), recalculada na exportação',
@@ -63,13 +72,14 @@ export default function Regras() {
           return (
             <div key={r.chave} className={`cartao regra ${e.ativo ? '' : 'desligada'}`}>
               <div className="titulo-secao">
-                <h3><span className={`sev sev-${r.severidade}`} title={`Severidade ${SEVERIDADE[r.severidade]}`} /> {r.nome}</h3>
+                <h3><span className={`sev sev-${r.severidade}`} title={`Severidade ${SEVERIDADE[r.severidade]}`} /> <small className="grupo">{r.grupo}</small> {r.nome}</h3>
                 <label className="chave">
                   <input type="checkbox" checked={e.ativo} onChange={(x) => setEdit({ ...edit, [r.chave]: { ...e, ativo: x.target.checked } })} />
                   {e.ativo ? 'Ativa' : 'Desligada'}
                 </label>
               </div>
               <p className="sub">{r.descricao}</p>
+              {r.limitacoes && <p className="sub"><b>Riscos:</b> {r.limitacoes}</p>}
               {Object.entries(e.params).map(([k, v]) => (
                 <label key={k} className={typeof v === 'boolean' ? 'linha-check' : ''}>
                   {typeof v === 'boolean' ? (

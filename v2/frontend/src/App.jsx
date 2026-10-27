@@ -7,6 +7,7 @@ import Auditoria from './pages/Auditoria.jsx'
 import Revisao from './pages/Revisao.jsx'
 import Correcao from './pages/Correcao.jsx'
 import LogAuditoria from './pages/LogAuditoria.jsx'
+import Execucoes from './pages/Execucoes.jsx'
 import Usuarios from './pages/Usuarios.jsx'
 import Regras from './pages/Regras.jsx'
 import TrocarSenha from './components/TrocarSenha.jsx'
@@ -47,6 +48,7 @@ export default function App() {
           </div>
           <nav>
             <NavLink to="/" end>Lotes</NavLink>
+            <NavLink to="/execucoes">Execuções</NavLink>
             <NavLink to="/log">Log de auditoria</NavLink>
             {admin && <NavLink to="/admin/usuarios">Usuários</NavLink>}
             {admin && <NavLink to="/admin/regras">Regras de correção</NavLink>}
@@ -64,6 +66,7 @@ export default function App() {
             <Route path="/lotes/:id" element={<Auditoria />} />
             <Route path="/lotes/:id/revisao" element={<Revisao />} />
             <Route path="/lotes/:id/correcao" element={<Correcao />} />
+            <Route path="/execucoes" element={<Execucoes />} />
             <Route path="/log" element={<LogAuditoria />} />
             <Route path="/admin/usuarios" element={admin ? <Usuarios /> : <Navigate to="/" />} />
             <Route path="/admin/regras" element={admin ? <Regras /> : <Navigate to="/" />} />

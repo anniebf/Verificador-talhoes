@@ -10,8 +10,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from . import auth, config, log_auditoria, regras, servico
-from .db import Inconsistencia, Lote, Log, Regra, Sessao, Usuario, agora, criar_tabelas
+from . import auth, config, estados, log_auditoria, regras, relatorios, servico
+from .db import Execucao, Inconsistencia, Lote, Log, Regra, Sessao, Usuario, agora, criar_tabelas
 from .importacao import ErroArquivo
 from .log_auditoria import registrar, trava_escrita
 
@@ -43,6 +43,14 @@ def pegar_lote(s, lote_id) -> Lote:
 
 def baixar(nome, dados, tipo):
     return Response(dados, media_type=tipo, headers={'Content-Disposition': f'attachment; filename="{nome}"'})
+
+
+@app.get('/api/saude', include_in_schema=False)
+def saude():
+    """Para o healthcheck do Docker: responde quando a API e o banco estão de pé."""
+    with Sessao() as s:
+        s.execute(select(Usuario.id).limit(1))
+    return {'ok': True}
 
 
 # ---------- autenticação ----------
@@ -233,14 +241,25 @@ def listar_lotes(_: Usuario = Depends(auth.usuario_atual)):
         abertas = {}
         for lid, st in s.execute(select(Inconsistencia.lote_id, Inconsistencia.status)):
             d = abertas.setdefault(lid, {'abertas': 0, 'resolvidas': 0})
-            d['abertas' if st in ('pendente', 'aceita', 'rejeitada') else 'resolvidas'] += 1
+            d['abertas' if st in estados.ABERTOS else 'resolvidas'] += 1
         return [{**servico.lote_json(l), **abertas.get(l.id, {'abertas': 0, 'resolvidas': 0})} for l in lotes]
 
 
+def _lista_regras(texto):
+    """Verificações escolhidas na importação ('' = todas as ativas)."""
+    escolhidas = [x.strip() for x in (texto or '').split(',') if x.strip()]
+    desconhecidas = [x for x in escolhidas if x not in regras.PADRAO]
+    if desconhecidas:
+        raise HTTPException(400, f'Verificação desconhecida: {", ".join(desconhecidas)}')
+    return escolhidas
+
+
 @app.post('/api/lotes')
-async def criar_lote(arquivos: list[UploadFile] = File(...), nome: str = Form(''), u: Usuario = Depends(auth.usuario_atual)):
+async def criar_lote(arquivos: list[UploadFile] = File(...), nome: str = Form(''), verificacoes: str = Form(''),
+                     u: Usuario = Depends(auth.usuario_atual)):
+    sel = _lista_regras(verificacoes)
     dados = await ler_uploads(arquivos)
-    return await _rodar(lambda: _importar(dados, nome, None, u))
+    return await _rodar(lambda: _importar(dados, nome, None, u, sel))
 
 
 @app.post('/api/lotes/{lote_id}/camadas')
@@ -254,10 +273,10 @@ async def _rodar(f):
     return await run_in_threadpool(f)
 
 
-def _importar(dados, nome, lote_id, u):
+def _importar(dados, nome, lote_id, u, verificacoes=None):
     with trava_escrita, Sessao() as s:
         lote = pegar_lote(s, lote_id) if lote_id else None
-        lote = servico.importar(s, u, dados, nome, lote)
+        lote = servico.importar(s, u, dados, nome, lote, verificacoes)
         s.commit()
         return servico.resumo_lote(s, lote)
 
@@ -284,11 +303,33 @@ def mapa(lote_id: int, fazenda: str | None = None, versao: int | None = None, _:
         return servico.mapa_fazenda(s, pegar_lote(s, lote_id), fazenda, versao)
 
 
+class Reauditoria(BaseModel):
+    verificacoes: list[str] | None = None
+
+
 @app.post('/api/lotes/{lote_id}/auditar')
-def reauditar(lote_id: int, u: Usuario = Depends(auth.usuario_atual)):
+def reauditar(lote_id: int, d: Reauditoria | None = None, u: Usuario = Depends(auth.usuario_atual)):
+    sel = _lista_regras(','.join(d.verificacoes)) if d and d.verificacoes is not None else None
     with trava_escrita, Sessao() as s:
         lote = pegar_lote(s, lote_id)
-        servico.auditar(s, lote, u)
+        servico.auditar(s, lote, u, verificacoes=sel, entrada='reauditoria pedida pelo usuário')
+        s.commit()
+        return servico.resumo_lote(s, lote)
+
+
+class Campos(BaseModel):
+    fazenda: str = ''
+    fazenda_nome: str = ''
+    aglomerado: str = ''
+    talhao: str = ''
+    area_ha: str = ''
+
+
+@app.put('/api/lotes/{lote_id}/campos')
+def trocar_campos(lote_id: int, d: Campos, u: Usuario = Depends(auth.usuario_atual)):
+    with trava_escrita, Sessao() as s:
+        lote = pegar_lote(s, lote_id)
+        servico.remapear_campos(s, lote, d.model_dump(), u)
         s.commit()
         return servico.resumo_lote(s, lote)
 
@@ -296,49 +337,89 @@ def reauditar(lote_id: int, u: Usuario = Depends(auth.usuario_atual)):
 # ---------- etapa 2: revisão ----------
 @app.get('/api/lotes/{lote_id}/inconsistencias')
 def inconsistencias(lote_id: int, fazenda: str | None = None, tipo: str | None = None, status: str | None = 'abertas',
+                    talhao: str | None = None, auto: bool | None = None, ids: str | None = None,
                     _: Usuario = Depends(auth.usuario_atual)):
+    lista_ids = [int(x) for x in ids.split(',') if x.strip()] if ids else None
     with Sessao() as s:
-        return servico.listar_inconsistencias(s, pegar_lote(s, lote_id), fazenda, tipo, status)
+        return servico.listar_inconsistencias(s, pegar_lote(s, lote_id), fazenda, tipo, status or None, talhao, auto, lista_ids)
 
 
 @app.get('/api/lotes/{lote_id}/inconsistencias/{inc_id}')
-def inconsistencia(lote_id: int, inc_id: int, _: Usuario = Depends(auth.usuario_atual)):
-    with Sessao() as s:
+def inconsistencia(lote_id: int, inc_id: int, u: Usuario = Depends(auth.usuario_atual)):
+    # abrir a ocorrência a coloca "em revisão": por isso grava
+    with trava_escrita, Sessao() as s:
         lote = pegar_lote(s, lote_id)
         inc = s.get(Inconsistencia, inc_id)
         if not inc or inc.lote_id != lote.id:
-            raise HTTPException(404, 'Inconsistência não encontrada (o lote pode ter sido auditado de novo).')
-        return servico.detalhe_inconsistencia(s, lote, inc)
+            raise HTTPException(404, 'Ocorrência não encontrada (o lote pode ter sido auditado de novo).')
+        d = servico.detalhe_inconsistencia(s, lote, inc, u)
+        s.commit()
+        return d
 
 
 class Decisao(BaseModel):
     ids: list[int]
-    decisao: Literal['aceitar', 'manter']
+    decisao: Literal['aprovar', 'rejeitar', 'pendente']
 
 
 @app.post('/api/lotes/{lote_id}/decisoes')
 def decidir(lote_id: int, d: Decisao, u: Usuario = Depends(auth.usuario_atual)):
     with trava_escrita, Sessao() as s:
         lote = pegar_lote(s, lote_id)
-        incs = servico.decidir(s, lote, d.ids, d.decisao, u)
+        feitas, recusadas = servico.decidir(s, lote, d.ids, d.decisao, u)
         s.commit()
-        return [{'id': i.id, 'status': i.status, 'decididoPor': i.decidido_por, 'decididoEm': i.decidido_em} for i in incs]
+        return {'alteradas': [{'id': i.id, 'status': i.status, 'estado': estados.ESTADOS[i.status], 'decididoPor': i.decidido_por,
+                               'decididoEm': i.decidido_em} for i in feitas], 'recusadas': recusadas}
 
 
 # ---------- etapa 3: correção e exportação ----------
-class Aplicacao(BaseModel):
+class Selecao(BaseModel):
     ids: list[int]
 
 
-@app.post('/api/lotes/{lote_id}/aplicar')
-def aplicar(lote_id: int, d: Aplicacao, u: Usuario = Depends(auth.usuario_atual)):
+@app.post('/api/lotes/{lote_id}/correcao/preparar')
+def preparar(lote_id: int, d: Selecao, _: Usuario = Depends(auth.usuario_atual)):
+    with Sessao() as s:
+        return servico.preparar_correcao(s, pegar_lote(s, lote_id), d.ids)
+
+
+@app.post('/api/lotes/{lote_id}/correcao')
+def executar(lote_id: int, d: Selecao, u: Usuario = Depends(auth.usuario_atual)):
     if not d.ids:
-        raise HTTPException(400, 'Nada para aplicar.')
+        raise HTTPException(400, 'Nada para executar.')
+    with Sessao() as s:
+        pegar_lote(s, lote_id)
+    return {'execucaoId': servico.iniciar_correcao(lote_id, d.ids, u)}
+
+
+@app.get('/api/execucoes')
+def listar_execucoes(lote_id: int | None = None, _: Usuario = Depends(auth.usuario_atual)):
+    with Sessao() as s:
+        return [servico.execucao_json(e) for e in relatorios.execucoes(s, lote_id)]
+
+
+@app.get('/api/execucoes/{eid}')
+def ver_execucao(eid: int, _: Usuario = Depends(auth.usuario_atual)):
+    with Sessao() as s:
+        e = s.get(Execucao, eid)
+        if not e:
+            raise HTTPException(404, 'Execução não encontrada.')
+        return servico.execucao_json(e)
+
+
+@app.get('/api/execucoes/{eid}/relatorio/{formato}')
+def relatorio_execucao(eid: int, formato: Literal['csv', 'pdf'], u: Usuario = Depends(auth.usuario_atual)):
     with trava_escrita, Sessao() as s:
-        lote = pegar_lote(s, lote_id)
-        r = servico.aplicar(s, lote, d.ids, u)
+        e = s.get(Execucao, eid)
+        if not e:
+            raise HTTPException(404, 'Execução não encontrada.')
+        if e.status == 'executando':
+            raise HTTPException(409, 'A execução ainda está rodando.')
+        dados = relatorios.gerar_csv(s, e) if formato == 'csv' else relatorios.gerar_pdf(s, e)
+        nome = f'relatorio_{e.tipo}_{e.id}.{formato}'
+        registrar(s, u.usuario, 'exportacao', f'Baixou o relatório da execução #{e.id} ({formato.upper()}).', lote_id=e.lote_id)
         s.commit()
-        return r
+        return baixar(nome, dados, 'application/pdf' if formato == 'pdf' else 'text/csv; charset=utf-8')
 
 
 @app.get('/api/lotes/{lote_id}/exportar')

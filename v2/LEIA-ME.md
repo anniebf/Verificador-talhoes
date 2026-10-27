@@ -1,104 +1,73 @@
 # Verificador de Talhões v2
 
-Plataforma web para **auditar, revisar visualmente e corrigir** shapefiles de fazendas, aglomerados
-e talhões antes de mandar as camadas para produção no QGIS. A v1 (pasta de cima) continua
-funcionando à parte.
+Plataforma web para **auditar, revisar e corrigir** bases geográficas de talhões (shapefiles de polígonos e,
+opcionalmente, camadas de estradas em linhas), seguindo a Documentação Funcional 2.0. Nada é alterado sem a
+aprovação do usuário, toda correção é validada depois de executada e a base original (versão 1) é sempre
+preservada. A v1 (pasta de cima) continua funcionando à parte.
 
-Esta é a primeira fase: o sistema completo com **login local e perfil de administrador**.
-Usuários do Active Directory e o plugin do QGIS entram nas próximas fases (o banco e a API já
-têm os ganchos para isso).
+Esta fase cobre o **administrador** com login local. Active Directory e o plugin do QGIS são as próximas fases.
+A documentação detalhada do funcionamento está no documento "Verificador de Talhões v2 — Documentação do
+funcionamento" (Claude Docs).
 
 ## Como rodar
 
-**Windows:** dê dois cliques em `iniciar.bat` (na primeira vez ele instala tudo; precisa do
-Python 3.11+ e do Node.js). Abra `http://localhost:8000`.
+**Windows:** dois cliques em `iniciar.bat` (precisa de Python 3.11+ e Node.js 20+) → `http://localhost:8000`.
 
-**Primeiro acesso:** usuário `admin`, senha `admin`. O sistema obriga a trocar a senha na entrada.
-Para outra senha inicial, defina `VT_ADMIN_SENHA` antes de iniciar pela primeira vez.
+**Docker (servidor):** `docker compose up -d --build` nesta pasta → `http://<servidor>:8080`
+(outra porta: `PORTA=81 docker compose up -d`). Dados no volume `dados`. O build ainda não foi testado.
 
-Manualmente:
+**Primeiro acesso:** `admin` / `admin`; o sistema obriga a trocar a senha.
 
-```bash
-cd backend
-python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
-.venv/Scripts/python -m uvicorn app.main:app --port 8000
-```
+**Testes:** `python -m pytest tests -q` em `backend` (5 testes de ponta a ponta sobre a base controlada).
+**Base de exemplo:** `python scripts/gerar_exemplo.py` em `backend` (um problema conhecido por regra).
 
-```bash
-cd frontend
-npm install && npm run build      # o backend serve a pasta dist/
-npm run dev                       # ou: tela em modo desenvolvimento em :5173 (usa a API em :8000)
-```
+## O fluxo
 
-**Dados de exemplo** (um erro de cada tipo, 3 fazendas): `python scripts/gerar_exemplo.py`
-dentro de `backend` gera `dados/exemplo/fazendas_exemplo.zip` e `fazenda_extra.zip` (para testar
-a mesclagem). **Testes** do fluxo inteiro pela API: `python -m pytest tests -q`.
+1. **Auditoria** — envio de .zip, .rar ou arquivos soltos; validação da entrada (.shp/.shx/.dbf obrigatórios,
+   .prj, leitura, tipo de geometria); escolha das verificações; registro das ocorrências com classificação
+   (confirmado / suspeito / inconclusivo), motivo, características e se há correção automática. Só lê a base.
+2. **Revisão** — filtros por fazenda, talhão, categoria, estado e correção automática; detalhes da feição;
+   prévia original × corrigida lado a lado (calculada numa cópia); decisão **Aprovar / Rejeitar / Manter
+   pendente** (atalhos A / R / P), individual ou em lote (só as elegíveis).
+3. **Correção automática** — relatório de preparação, confirmação, execução em segundo plano com progresso,
+   **validação de cada correção** (legível, válida, problema resolvido, sem novas sobreposições, atributos
+   preservados, limites da regra), nova versão, reauditoria das fazendas, relatório da execução e downloads.
 
-## O fluxo em 3 etapas
+Estados das ocorrências: Identificada, Em revisão, Aprovada, Rejeitada, Pendente, Corrigida, Falha na correção,
+Não corrigível automaticamente. Cada execução (auditoria ou correção) tem número próprio e relatório PDF/CSV;
+o log de auditoria é imutável e encadeado por hash.
 
-1. **Auditoria** (tela do lote) – importa `.zip`, `.rar` ou os arquivos soltos (`.shp`, `.dbf`,
-   `.shx`, `.prj`, `.cpg`); vários shapefiles viram um lote só e dá para **mesclar** mais depois.
-   A hierarquia fazenda → aglomerado → talhão é reconhecida pelos nomes das colunas (configurável).
-   Painel esquerdo com fazendas, aglomerados, talhões e polígonos; mapa de satélite no centro;
-   relatório de inconsistências por categoria à direita.
-2. **Revisão visual** – como um *merge* do git: dois mapas sincronizados, **original com o erro**
-   à esquerda e **proposta corrigida** à direita, com área, vértices e partes antes/depois. Dá
-   para revisar um erro só ou o pacote completo da fazenda. Cada item precisa de uma decisão
-   explícita (**Manter original** ou **Aceitar correção**; atalhos `M` e `A`) antes de seguir.
-3. **Correção e envio** – aplica só o que foi aceito, grava uma **nova versão** do lote, registra
-   cada decisão no log e reaudita a fazenda. Daí: baixar shapefile/GeoJSON da versão, relatório
-   CSV/PDF, voltar ao mapa principal ou (próxima fase) enviar ao QGIS.
+## Regras
 
-## O que é detectado e como é corrigido
+| Grupo | Regra | Correção automática |
+|---|---|---|
+| A | Geometria vazia | remover o registro |
+| A | Geometria inválida | reparar (make_valid) |
+| A | Vértices duplicados | remover repetições |
+| B | Múltiplas partes (suspeito) | remover a parte só se ≤ 2 ha e ≤ 5% do talhão |
+| C | Buraco interno | preencher só se ≤ 1 ha |
+| D | Possível corte por estrada (indicativo) | recortar a faixa só com camada de estradas |
+| E | Sobreposição | recortar do talhão maior |
+| E | Lacuna cercada por vizinhos | juntar ao vizinho de maior divisa |
+| F | Estrada desconectada | ligar a ponta à linha vizinha |
+| F | Segmento isolado | manual |
+| — | Atributo ausente, Talhão duplicado | manual |
+| — | Excesso de vértices | simplificar só se a área mudar ≤ 0,5% |
 
-| Erro | Correção proposta |
-|---|---|
-| Geometria vazia | remover o registro |
-| Autointerseção / geometria inválida | refazer válida (`make_valid`) |
-| Vértices duplicados | remover as repetições |
-| Buraco interno | preencher (ignora faixas com formato de estrada e buracos acima do limite) |
-| Parte solta | remover o pedaço |
-| Excesso de vértices | simplificar (só se a área mudar menos que o limite) |
-| Sobreposição entre talhões | recortar a área sobreposta do maior (ou do menor) |
-| Lacuna fechada entre vizinhos | juntar ao vizinho com a maior divisa |
-| Atributo ausente (fazenda/talhão) | só manual |
-| Talhão duplicado na fazenda | só manual |
-
-Os limites ficam em **Regras de correção** (só admin), e cada mudança vai para o log. As contas de
-área e distância são feitas em metros (UTM estimado do lote) mesmo quando o shapefile está em
-graus. Recortes e uniões usam precisão de 1 mm para não deixar lascas.
-
-Ao exportar, o campo de área (`HA`/`AREA`…) é recalculado só nos talhões que mudaram; os demais
-atributos saem como vieram.
-
-## Versões e log de auditoria
-
-- Cada correção aplicada cria uma versão nova do lote; qualquer versão pode ser baixada.
-  Uma decisão "manter original" não volta a aparecer nas próximas auditorias.
-- O **log de auditoria** guarda data/hora (UTC), usuário, lote, versão, fazenda, talhão,
-  descrição e a **geometria antes e depois** (WKT). É imutável: o banco recusa `UPDATE`/`DELETE`
-  e cada linha leva o hash da anterior; a tela mostra se a corrente está íntegra.
+Todos os limites são editáveis em **Regras de correção** (admin). As colunas de fazenda, aglomerado e talhão são
+sugeridas na importação e confirmadas por lote em **Campos da hierarquia** (nada é presumido).
 
 ## Estrutura
 
 | Caminho | O quê |
 |---|---|
-| `backend/app/main.py` | API (FastAPI) e entrega da tela |
-| `backend/app/topologia.py` | detecção dos erros e as operações de correção (Shapely/PyProj) |
-| `backend/app/servico.py` | importar, auditar, versionar, aplicar, exportar |
-| `backend/app/importacao.py` | leitura de .zip/.rar/arquivos soltos (pyogrio/GDAL) |
-| `backend/app/regras.py` | regras padrão e mapeamento de colunas |
-| `backend/app/log_auditoria.py` | log encadeado por hash, CSV e PDF |
-| `backend/app/auth.py`, `db.py` | login/perfis (admin, analista) e banco (SQLite) |
-| `frontend/src/pages/` | telas: Lotes, Auditoria (etapa 1), Revisao (2), Correcao (3), Log, Usuários, Regras |
+| `backend/app/topologia.py` | detecção (só lê) |
+| `backend/app/correcao.py` | operações de correção e validação |
+| `backend/app/servico.py` | importar, auditar, decidir, executar, versionar, exportar |
+| `backend/app/estados.py`, `regras.py` | estados e catálogo de regras |
+| `backend/app/relatorios.py`, `log_auditoria.py` | relatórios de execução e log imutável |
+| `backend/app/importacao.py` | leitura e validação dos arquivos |
+| `backend/app/main.py` | API (FastAPI); documentação interativa em `/docs` |
+| `frontend/src/pages/` | Lotes, Auditoria, Revisao, Correcao, Execucoes, LogAuditoria, Usuarios, Regras |
 
-Configuração por variáveis de ambiente: `VT_DADOS` (pasta do banco), `VT_DB` (URL do banco;
-padrão SQLite), `VT_SEGREDO` (chave dos tokens), `VT_ADMIN_USUARIO`/`VT_ADMIN_SENHA`.
-
-## Próximas fases
-
-- **Login pelo Active Directory / LDAP**: `auth.autenticar` é o ponto de entrada; o cadastro já
-  aceita a origem "AD".
-- **Plugin QGIS (PyQGIS)**: vai consumir `GET /api/lotes/{id}/exportar?formato=geojson` com o
-  token do usuário e carregar a camada no projeto aberto.
-- Banco PostgreSQL/PostGIS para muitos usuários ao mesmo tempo (hoje SQLite).
+Variáveis: `VT_DADOS`, `VT_DB`, `VT_SEGREDO`, `VT_TOKEN_HORAS`, `VT_ADMIN_USUARIO`, `VT_ADMIN_SENHA`.

@@ -1,0 +1,10 @@
+backend/.venv/
+backend/dados/
+backend/tests/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+*.zip
+*.rar

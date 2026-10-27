@@ -10,7 +10,7 @@ from pathlib import Path
 import geopandas as gpd
 import shapely
 from pyproj import Transformer
-from shapely import MultiPolygon, Polygon, box
+from shapely import LineString, MultiPolygon, Polygon, box
 
 SAIDA = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / 'dados' / 'exemplo'
 SAIDA.mkdir(parents=True, exist_ok=True)
@@ -43,16 +43,28 @@ def fazenda_a():
 
 
 def fazenda_b():
-    """Fazenda 5010 (SANTA RITA): talhão duplicado, sem número, excesso de vértices, buraco tipo estrada (ignorado)."""
+    """Fazenda 5010 (SANTA RITA): talhão duplicado, sem número, excesso de vértices, faixa de estrada dentro do
+    talhão 005 (corte por estrada, indicativo) e o talhão 008 com duas partes grandes (multiparte legítimo:
+    é apontado como suspeito, sem proposta de remoção)."""
     import numpy as np
     x, y = X0 + 3000, Y0
     t = grade(x, y, 3, 2, lado=500)
     ang = np.linspace(0, 2 * np.pi, 3000)                                # 3000 vértices num círculo de 250 m
     cx, cy = x + 250, y + 1250
     t.append(Polygon(np.column_stack([cx + 250 * np.cos(ang), cy + 250 * np.sin(ang)])))
-    # estrada de 8 m atravessando o talhão 4 por dentro (vira buraco comprido): não deve aparecer
+    # estrada de 8 m atravessando o talhão 005 por dentro (buraco comprido)
     t[4] = Polygon(t[4].exterior.coords, [[(x + 540, y + 746), (x + 960, y + 746), (x + 960, y + 754), (x + 540, y + 754)]])
+    t.append(MultiPolygon([box(x + 1600, y, x + 1900, y + 300), box(x + 2000, y, x + 2300, y + 300)]))
     return t
+
+
+def estradas():
+    """Camada de linhas: estrada principal ao sul da 5010; uma estrada que atravessa os talhões 001 e 004
+    e para a 6 m da principal (desconectada); e um trecho isolado."""
+    x, y = X0 + 3000, Y0
+    return [LineString([(x - 100, y - 50), (x + 1600, y - 50)]),
+            LineString([(x + 250, y + 990), (x + 250, y - 44)]),
+            LineString([(x + 2000, y + 2000), (x + 2300, y + 2000)])]
 
 
 def montar(talhoes, faz, nome, aglomerados, numeros):
@@ -63,10 +75,12 @@ def montar(talhoes, faz, nome, aglomerados, numeros):
     }, geometry=[graus(g) for g in talhoes], crs='EPSG:4674')
 
 
-def zipar(gdf, nome):
+def zipar(gdf, nome, extras=()):
+    """Um .zip com a camada principal e as camadas extras [(gdf, nome)] juntas."""
     pasta = SAIDA / nome
     pasta.mkdir(exist_ok=True)
-    gdf.to_file(pasta / f'{nome}.shp', engine='pyogrio', encoding='UTF-8')
+    for g, n in [(gdf, nome), *extras]:
+        g.to_file(pasta / f'{n}.shp', engine='pyogrio', encoding='UTF-8')
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         for p in pasta.iterdir():
@@ -77,8 +91,10 @@ def zipar(gdf, nome):
 
 a = montar(fazenda_a(), '5004', 'MALU', ['A1'] * 8 + ['A2'] * 4, [f'{i:03d}' for i in range(1, 13)])
 b_t = fazenda_b()
-b = montar(b_t, '5010', 'SANTA RITA', ['B1'] * len(b_t), ['001', '002', '002', '004', '005', '', '007'])
-print(zipar(gpd.GeoDataFrame(__import__('pandas').concat([a, b], ignore_index=True), crs='EPSG:4674'), 'fazendas_exemplo'))
+b = montar(b_t, '5010', 'SANTA RITA', ['B1'] * len(b_t), ['001', '002', '002', '004', '005', '', '007', '008'])
+ruas = gpd.GeoDataFrame({'NOME': ['Principal', 'Ramal 1', 'Trecho solto']}, geometry=[graus(g) for g in estradas()], crs='EPSG:4674')
+print(zipar(gpd.GeoDataFrame(__import__('pandas').concat([a, b], ignore_index=True), crs='EPSG:4674'), 'fazendas_exemplo',
+            [(ruas, 'estradas_exemplo')]))
 
 # camada à parte para testar a mesclagem: fazenda 5020 com uma sobreposição
 c_t = grade(X0, Y0 + 3000, 3, 1)

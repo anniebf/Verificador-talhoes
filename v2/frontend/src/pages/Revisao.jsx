@@ -1,12 +1,24 @@
-// Etapa 2: revisão visual lado a lado (como um "diff" do git): original com erro x proposta corrigida.
+// Etapa 2: revisão das ocorrências. Original x prévia da correção lado a lado (a prévia é calculada numa
+// cópia: a base não muda aqui), detalhes da feição e a decisão: aprovar, rejeitar ou deixar pendente.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, area, num } from '../api.js'
+import { api, area, data, num } from '../api.js'
 import Mapa, { ESTILOS, sincronizar } from '../components/Mapa.jsx'
-import { Aviso, Etapas, SEVERIDADE, STATUS } from '../components/Comuns.jsx'
+import { Aviso, Classe, Estado, Etapas, SEVERIDADE, STATUS } from '../components/Comuns.jsx'
 
 const FC = (features) => ({ type: 'FeatureCollection', features })
-const decidida = (i) => i.status === 'aceita' || i.status === 'rejeitada'
+const SEM_DECISAO = ['identificada', 'em_revisao']
+const DECIDIVEL = (i) => i.status !== 'corrigida'
+const ROTULO_CARAC = {
+  area_ha: 'Área (ha)', area_m2: 'Área (m²)', perimetro_m: 'Perímetro (m)', largura_media_m: 'Largura média (m)', largura_m: 'Largura (m)',
+  comprimento_m: 'Comprimento (m)', percentual_do_talhao: '% do talhão', partes: 'Partes', area_parte_ha: 'Área da parte (ha)',
+  distancia_ao_principal_m: 'Distância ao contorno principal (m)', vertices: 'Vértices', vertices_depois: 'Vértices depois',
+  espacamento_medio_m: 'Espaçamento médio (m)', variacao_area_pct: 'Variação de área (%)', percentual_alvo: '% do talhão recortado',
+  percentual_outro: '% do outro talhão', fazendas: 'Fazendas', vizinhos: 'Vizinhos', repetidos: 'Vértices repetidos',
+  motivo_geos: 'Motivo (GEOS)', partes_apos_reparo: 'Partes após o reparo', area_apos_reparo_ha: 'Área após o reparo (ha)',
+  comprimento_dentro_m: 'Comprimento dentro do talhão (m)', largura_faixa_m: 'Largura da faixa (m)', onde: 'Onde', distancia_m: 'Distância (m)',
+  registros: 'Registros', fechado: 'Circuito fechado',
+}
 
 export default function Revisao() {
   const { id } = useParams()
@@ -14,30 +26,42 @@ export default function Revisao() {
   const nav = useNavigate()
   const fazenda = sp.get('fazenda') ?? '*'
   const unico = sp.get('inc') ? Number(sp.get('inc')) : null
-  const tipo = sp.get('tipo') || undefined
-  const [todas, setTodas] = useState(null)
+  const [filtro, setFiltro] = useState({ tipo: sp.get('tipo') || '', status: 'abertas', talhao: '', auto: '' })
+  const [lista, setLista] = useState(null)
+  const [tipos, setTipos] = useState([])
   const [atualId, setAtualId] = useState(null)
   const [det, setDet] = useState(null)
+  const [marcadas, setMarcadas] = useState(new Set())
   const [erro, setErro] = useState('')
+  const [info, setInfo] = useState('')
   const [salvando, setSalvando] = useState(false)
   const mapas = useRef([])
 
-  useEffect(() => {
-    api.get(`/api/lotes/${id}/inconsistencias`, { fazenda: fazenda === '*' ? undefined : fazenda, tipo })
-      .then((l) => setTodas(l)).catch((e) => setErro(e.message))
-  }, [id, fazenda, tipo])
+  useEffect(() => { api.get(`/api/lotes/${id}`).then((l) => setTipos(l.tipos)).catch(() => {}) }, [id])
 
-  const lista = useMemo(() => (todas ? (unico ? todas.filter((i) => i.id === unico) : todas) : []), [todas, unico])
+  const carregar = useCallback(() => {
+    const p = unico ? { ids: String(unico), status: '' } : {
+      fazenda: fazenda === '*' ? undefined : fazenda, tipo: filtro.tipo || undefined, status: filtro.status,
+      talhao: filtro.talhao || undefined, auto: filtro.auto === '' ? undefined : filtro.auto === 'sim',
+    }
+    return api.get(`/api/lotes/${id}/inconsistencias`, p)
+      .then((l) => { setLista(l); setMarcadas(new Set()) }).catch((e) => setErro(e.message))
+  }, [id, fazenda, unico, filtro])
+  useEffect(() => { carregar() }, [carregar])
 
   useEffect(() => {
-    if (!lista.length) return
-    if (!lista.some((i) => i.id === atualId)) setAtualId((lista.find((i) => !decidida(i)) || lista[0]).id)
+    if (!lista?.length) { setAtualId(null); return }
+    if (!lista.some((i) => i.id === atualId)) setAtualId((lista.find((i) => SEM_DECISAO.includes(i.status)) || lista[0]).id)
   }, [lista])
 
   useEffect(() => {
-    if (!atualId) return
+    if (!atualId) { setDet(null); return }
     setDet(null)
-    api.get(`/api/lotes/${id}/inconsistencias/${atualId}`).then(setDet).catch((e) => setErro(e.message))
+    api.get(`/api/lotes/${id}/inconsistencias/${atualId}`).then((d) => {
+      setDet(d)
+      // abrir a ocorrência a coloca "em revisão"
+      setLista((l) => l?.map((i) => (i.id === d.id ? { ...i, status: d.status } : i)))
+    }).catch((e) => setErro(e.message))
   }, [id, atualId])
 
   const aoCriarMapa = useCallback((m) => {
@@ -46,185 +70,249 @@ export default function Revisao() {
     return () => { mapas.current = mapas.current.filter((x) => x !== m) }
   }, [])
 
-  const atual = lista.find((i) => i.id === atualId)
-  const pos = lista.findIndex((i) => i.id === atualId)
-  const feitas = lista.filter(decidida).length
+  const atual = lista?.find((i) => i.id === atualId)
+  const pos = lista ? lista.findIndex((i) => i.id === atualId) : -1
+  const cont = useMemo(() => (lista || []).reduce((c, i) => ({ ...c, [i.status]: (c[i.status] || 0) + 1 }), {}), [lista])
 
   const decidir = async (ids, decisao, avancar = true) => {
-    setSalvando(true); setErro('')
+    setSalvando(true); setErro(''); setInfo('')
     try {
       const r = await api.post(`/api/lotes/${id}/decisoes`, { ids, decisao })
-      const por = Object.fromEntries(r.map((x) => [x.id, x]))
-      const nova = todas.map((i) => (por[i.id] ? { ...i, ...por[i.id] } : i))
-      setTodas(nova)
+      const por = Object.fromEntries(r.alteradas.map((x) => [x.id, x]))
+      const nova = lista.map((i) => (por[i.id] ? { ...i, ...por[i.id] } : i))
+      setLista(nova)
+      setDet((d) => (d && por[d.id] ? { ...d, ...por[d.id] } : d))
+      if (r.recusadas.length) setInfo(`${r.alteradas.length} decidida(s). ${r.recusadas.length} não recebeu(ram) essa decisão: `
+        + r.recusadas.map((x) => `#${x.id} (${x.motivo})`).join('; ') + '.')
+      setMarcadas(new Set())
       if (avancar && ids.length === 1) {
-        const visiveis = unico ? nova.filter((i) => i.id === unico) : nova
-        const k = visiveis.findIndex((i) => i.id === ids[0])
-        const prox = [...visiveis.slice(k + 1), ...visiveis.slice(0, k)].find((i) => !decidida(i))
+        const k = nova.findIndex((i) => i.id === ids[0])
+        const prox = [...nova.slice(k + 1), ...nova.slice(0, k)].find((i) => SEM_DECISAO.includes(i.status))
         if (prox) setAtualId(prox.id)
       }
     } catch (e) { setErro(e.message) } finally { setSalvando(false) }
   }
 
-  const emLote = (decisao) => {
-    const alvo = lista.filter((i) => !decidida(i) && (decisao === 'manter' || i.temCorrecao))
-    if (!alvo.length) return
-    const txt = decisao === 'aceitar'
-      ? `Aceitar a correção automática nas ${alvo.length} inconsistência(s) ainda não decididas que têm correção?`
-      : `Manter o original nas ${alvo.length} inconsistência(s) ainda não decididas?`
-    if (confirm(txt)) decidir(alvo.map((i) => i.id), decisao, false)
-  }
+  // seleção em lote (3.2.5): mostra quem é elegível para cada decisão
+  const sel = (lista || []).filter((i) => marcadas.has(i.id))
+  const elegiveis = sel.filter((i) => i.temCorrecao && DECIDIVEL(i))
+  const individuais = sel.filter((i) => !i.temCorrecao)
+  const marcar = (i) => { const n = new Set(marcadas); n.has(i) ? n.delete(i) : n.add(i); setMarcadas(n) }
+  const marcarTodas = () => setMarcadas(marcadas.size === lista.length ? new Set() : new Set(lista.map((i) => i.id)))
 
-  // atalhos: A aceita, M mantém, setas navegam
+  // atalhos: A aprova, R rejeita, P deixa pendente, setas navegam
   useEffect(() => {
     const tecla = (e) => {
-      if (!atual || salvando || ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return
-      if (e.key === 'a' && atual.temCorrecao) decidir([atual.id], 'aceitar')
-      else if (e.key === 'm') decidir([atual.id], 'manter')
-      else if (e.key === 'ArrowRight' && pos < lista.length - 1) setAtualId(lista[pos + 1].id)
-      else if (e.key === 'ArrowLeft' && pos > 0) setAtualId(lista[pos - 1].id)
+      if (!atual || salvando || ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName) || e.ctrlKey || e.metaKey) return
+      if (e.key === 'a' && atual.temCorrecao && DECIDIVEL(atual)) decidir([atual.id], 'aprovar')
+      else if (e.key === 'r' && DECIDIVEL(atual)) decidir([atual.id], 'rejeitar')
+      else if (e.key === 'p' && DECIDIVEL(atual)) decidir([atual.id], 'pendente')
+      else if (e.key === 'ArrowDown' && pos < lista.length - 1) { e.preventDefault(); setAtualId(lista[pos + 1].id) }
+      else if (e.key === 'ArrowUp' && pos > 0) { e.preventDefault(); setAtualId(lista[pos - 1].id) }
     }
     window.addEventListener('keydown', tecla)
     return () => window.removeEventListener('keydown', tecla)
   })
 
   const destaque = det?.destaque ? FC([{ type: 'Feature', geometry: det.destaque, properties: {} }]) : null
-  const viz = det && {
-    dados: det.vizinhos, estilo: ESTILOS.vizinho,
-    dica: (f) => `Talhão ${f.properties.talhao || '?'} (vizinho)`,
-  }
-  const dicaT = (f) => `Talhão ${f.properties.talhao || '?'}${f.properties.aglomerado ? ` · ${f.properties.aglomerado}` : ''}`
-  const esquerda = useMemo(() => det ? [viz, { dados: det.original, estilo: ESTILOS.original, dica: dicaT },
-    destaque && { dados: destaque, estilo: ESTILOS.erro, ponto: { fillColor: '#ff1f3d' }, dica: () => det.nome }].filter(Boolean) : [], [det])
-  const direita = useMemo(() => det ? [viz, { dados: det.proposta, estilo: ESTILOS.proposta, dica: dicaT },
-    destaque && { dados: destaque, estilo: { color: '#fff', weight: 1.5, dashArray: '4 4', fillOpacity: 0 }, ponto: { fillColor: '#3ddc84', radius: 5 } }].filter(Boolean) : [], [det])
+  const estiloFeicao = (base) => (f) => (f.properties.linha ? { ...ESTILOS.estrada, color: base.color } : base)
+  const dicaT = (f) => (f.properties.linha ? `Linha #${f.properties.indice + 1}` : `Talhão ${f.properties.talhao || '?'}${f.properties.aglomerado ? ` · ${f.properties.aglomerado}` : ''}`)
+  const [esquerda, direita] = useMemo(() => {
+    if (!det) return [[], []]
+    const viz = { dados: det.vizinhos, estilo: (f) => (f.properties.linha ? ESTILOS.estrada : ESTILOS.vizinho), dica: (f) => `${dicaT(f)} (vizinho)` }
+    return [
+      [viz, { dados: det.original, estilo: estiloFeicao(ESTILOS.original), dica: dicaT },
+        destaque && { dados: destaque, estilo: ESTILOS.erro, ponto: { fillColor: '#ff1f3d' }, dica: () => det.nome }].filter(Boolean),
+      [viz, { dados: det.proposta, estilo: estiloFeicao(ESTILOS.proposta), dica: dicaT },
+        destaque && { dados: destaque, estilo: { color: '#fff', weight: 1.5, dashArray: '4 4', fillOpacity: 0 }, ponto: { fillColor: '#3ddc84', radius: 5 } }].filter(Boolean),
+    ]
+  }, [det])
   const enquadrar = det ? [det.original, destaque].filter(Boolean) : null
 
+  const aprovadas = cont.aprovada || 0
   const prosseguir = () => nav(`/lotes/${id}/correcao`, { state: { ids: lista.map((i) => i.id), fazenda } })
   const voltar = `/lotes/${id}?fazenda=${encodeURIComponent(fazenda)}`
+  const mudaFiltro = (k) => (e) => setFiltro({ ...filtro, [k]: e.target.value })
 
-  if (todas === null) return <div className="pagina"><Aviso>{erro}</Aviso>{!erro && <p className="sub">Carregando…</p>}</div>
+  if (lista === null) return <div className="pagina"><Aviso>{erro}</Aviso>{!erro && <p className="sub">Carregando…</p>}</div>
 
   return (
     <div className="tela-lote">
       <div className="barra-lote">
         <div>
           <Link to={voltar} className="btn-link">← Voltar à auditoria</Link>
-          <h1>Revisão visual {fazenda === '*' ? '— todas as fazendas' : `— fazenda ${fazenda || 'sem código'}`}</h1>
+          <h1>Revisão {unico ? `da ocorrência #${unico}` : fazenda === '*' ? '— todas as fazendas' : `— fazenda ${fazenda || 'sem código / estradas'}`}</h1>
         </div>
         <Etapas atual={2} loteId={id} fazenda={fazenda} />
       </div>
       <Aviso aoFechar={() => setErro('')}>{erro}</Aviso>
+      <Aviso tipo="alerta" aoFechar={() => setInfo('')}>{info}</Aviso>
 
-      {!lista.length ? (
-        <div className="pagina"><div className="cartao"><p>Nenhuma inconsistência em aberto neste filtro.</p>
-          <Link className="btn" to={voltar}>Voltar à auditoria</Link></div></div>
-      ) : (
-        <div className="revisao">
-          <aside className="painel">
-            <section>
-              <h3>O que revisar</h3>
-              <div className="escopo">
-                <label><input type="radio" checked={!unico} onChange={() => { sp.delete('inc'); setSp(sp) }} />
-                  Pacote completo {fazenda === '*' ? 'do lote' : 'da fazenda'} ({todas.length})</label>
-                <label><input type="radio" checked={!!unico} onChange={() => { sp.set('inc', atualId); setSp(sp) }} /> Somente um erro</label>
-                {unico && (
-                  <select value={unico} onChange={(e) => { sp.set('inc', e.target.value); setSp(sp) }}>
-                    {todas.map((i) => <option key={i.id} value={i.id}>#{i.id} {i.nome} — {i.feicoes.map((f) => f.talhao || '?').join(', ')}</option>)}
-                  </select>
-                )}
-              </div>
-              <div className="progresso"><div style={{ width: `${(feitas / lista.length) * 100}%` }} /></div>
-              <p className="sub">{feitas} de {lista.length} decididas</p>
-              {lista.length > 1 && (
-                <div className="botoes">
-                  <button className="btn pequeno" disabled={salvando} onClick={() => emLote('aceitar')}>Aceitar todas as correções</button>
-                  <button className="btn pequeno" disabled={salvando} onClick={() => emLote('manter')}>Manter todas</button>
-                </div>
-              )}
-            </section>
-            <section className="cresce">
-              <ul className="lista-incs">
-                {lista.map((i, k) => (
-                  <li key={i.id} className={i.id === atualId ? 'ativo' : ''} onClick={() => setAtualId(i.id)}>
-                    <div className="inc-topo">
-                      <span className={`sev sev-${i.severidade}`} /><b>{k + 1}. {i.nome}</b>
-                      <span className={`etiqueta ${STATUS[i.status].cls}`}>{STATUS[i.status].texto}</span>
-                    </div>
-                    <div className="inc-desc">{i.descricao}</div>
-                  </li>
-                ))}
-              </ul>
-            </section>
-            <div className="rodape-painel">
-              <button className="btn primario largo" disabled={feitas < lista.length} onClick={prosseguir}
-                title={feitas < lista.length ? 'Decida todas as inconsistências antes de prosseguir' : ''}>
-                Prosseguir para a correção →
-              </button>
-              {feitas < lista.length && <small className="sub">Falta decidir {lista.length - feitas}.</small>}
-            </div>
-          </aside>
-
-          <div className="comparacao">
-            <div className="dois-mapas">
-              <Mapa aoCriar={aoCriarMapa} camadas={esquerda} enquadrar={enquadrar} chaveEnquadrar={det?.id}
-                rotulo="Atual — com erro" className="lado-original"
-                legenda={[{ texto: 'Talhão envolvido', cor: ESTILOS.original.color }, { texto: 'Trecho com erro', cor: ESTILOS.erro.color, fundo: ESTILOS.erro.fillColor }, { texto: 'Vizinhos', cor: '#94a3b8' }]} />
-              <Mapa aoCriar={aoCriarMapa} camadas={direita} rotulo={det && !det.temCorrecao ? 'Sem correção automática' : 'Proposta — corrigido'}
-                className="lado-proposta"
-                legenda={[{ texto: 'Resultado da correção', cor: ESTILOS.proposta.color }, { texto: 'Onde estava o erro', cor: '#fff' }]} />
-              {!det && <div className="mapa-carregando">Carregando…</div>}
-            </div>
-
-            {atual && (
-              <div className="decisao">
-                <div className="decisao-info">
-                  <div className="inc-topo">
-                    <span className={`sev sev-${atual.severidade}`} /><b>#{atual.id} · {atual.nome}</b>
-                    <span className="sub">Severidade {SEVERIDADE[atual.severidade]} · {pos + 1} de {lista.length}</span>
-                  </div>
-                  <p>{atual.descricao}</p>
-                  {det && (
-                    <table className="tabela compacta">
-                      <thead><tr><th>Talhão</th><th>Área antes</th><th>Área depois</th><th>Vértices</th><th>Partes</th><th>Válida</th></tr></thead>
-                      <tbody>
-                        {det.envolvidas.map((e) => (
-                          <tr key={e.id} className={e.alvo ? 'alvo' : ''}>
-                            <td>{e.talhao || '?'}{e.aglomerado ? ` (${e.aglomerado})` : ''}{e.alvo ? ' ✎' : ''}</td>
-                            <td>{num(e.antes.areaHa, 4)} ha</td>
-                            <td>{e.removida ? 'removido' : `${num(e.depois.areaHa, 4)} ha`}
-                              {!e.removida && e.depois.areaHa !== e.antes.areaHa && <small> ({e.depois.areaHa > e.antes.areaHa ? '+' : ''}{area(Math.abs(e.depois.areaHa - e.antes.areaHa) * 1e4)})</small>}</td>
-                            <td>{e.antes.vertices} → {e.depois.vertices}</td>
-                            <td>{e.antes.partes} → {e.depois.partes}</td>
-                            <td>{e.antes.valida ? 'sim' : 'não'} → {e.depois.valida ? 'sim' : 'não'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {det?.operacao && <p className="sub">Correção proposta: <b>{det.operacao}</b> (✎ = talhão alterado)</p>}
-                  {det && !det.temCorrecao && <p className="aviso">Este tipo de erro não tem correção automática. Mantenha o original e corrija no QGIS.</p>}
-                </div>
-                <div className="decisao-botoes">
-                  <div className="nav-setas">
-                    <button className="btn pequeno" disabled={pos <= 0} onClick={() => setAtualId(lista[pos - 1].id)}>← Anterior</button>
-                    <button className="btn pequeno" disabled={pos >= lista.length - 1} onClick={() => setAtualId(lista[pos + 1].id)}>Próxima →</button>
-                  </div>
-                  <button className={`btn grande ${atual.status === 'rejeitada' ? 'escolhido-manter' : ''}`} disabled={salvando}
-                    onClick={() => decidir([atual.id], 'manter')}>
-                    ⟵ Manter original <kbd>M</kbd>
-                  </button>
-                  <button className={`btn grande primario ${atual.status === 'aceita' ? 'escolhido-aceitar' : ''}`} disabled={salvando || !atual.temCorrecao}
-                    onClick={() => decidir([atual.id], 'aceitar')}>
-                    Aceitar correção ⟶ <kbd>A</kbd>
-                  </button>
-                  <small className="sub">Decisão atual: <b>{STATUS[atual.status].texto}</b></small>
-                </div>
+      <div className="revisao">
+        <aside className="painel">
+          <section>
+            {unico ? (
+              <p className="sub">Revisando uma ocorrência. <button className="btn-link" onClick={() => { sp.delete('inc'); setSp(sp) }}>Ver todas {fazenda === '*' ? 'do lote' : 'da fazenda'}</button></p>
+            ) : (
+              <div className="filtros-revisao">
+                <input placeholder="Filtrar por talhão…" value={filtro.talhao} onChange={mudaFiltro('talhao')} />
+                <select value={filtro.tipo} onChange={mudaFiltro('tipo')}>
+                  <option value="">Todas as categorias</option>
+                  {tipos.map((t) => <option key={t.chave} value={t.chave}>{t.grupo} · {t.nome}</option>)}
+                </select>
+                <select value={filtro.status} onChange={mudaFiltro('status')}>
+                  <option value="abertas">Em aberto (todos os estados)</option>
+                  {Object.entries(STATUS).map(([k, v]) => <option key={k} value={k}>{v.texto}</option>)}
+                </select>
+                <select value={filtro.auto} onChange={mudaFiltro('auto')}>
+                  <option value="">Com e sem correção automática</option>
+                  <option value="sim">Só com correção automática</option>
+                  <option value="nao">Só manuais</option>
+                </select>
               </div>
             )}
+            <p className="contagem-estados">
+              {Object.entries(cont).map(([k, n]) => <span key={k}><Estado s={k} /> {n}</span>)}
+            </p>
+          </section>
+
+          {!unico && lista.length > 0 && (
+            <section className="lote-acoes">
+              <label className="linha-check"><input type="checkbox" checked={marcadas.size === lista.length} onChange={marcarTodas} />
+                Selecionar todas ({lista.length})</label>
+              {sel.length > 0 && (
+                <>
+                  <p className="sub">{sel.length} selecionada(s): <b>{elegiveis.length}</b> elegível(is) para aprovação em lote
+                    {individuais.length > 0 && <>; <b>{individuais.length}</b> sem correção automática (precisam de revisão individual)</>}.</p>
+                  <div className="botoes">
+                    <button className="btn pequeno primario" disabled={salvando || !elegiveis.length}
+                      onClick={() => decidir(elegiveis.map((i) => i.id), 'aprovar', false)}>Aprovar elegíveis ({elegiveis.length})</button>
+                    <button className="btn pequeno" disabled={salvando} onClick={() => decidir(sel.map((i) => i.id), 'rejeitar', false)}>Rejeitar</button>
+                    <button className="btn pequeno" disabled={salvando} onClick={() => decidir(sel.map((i) => i.id), 'pendente', false)}>Deixar pendente</button>
+                  </div>
+                </>
+              )}
+            </section>
+          )}
+
+          <section className="cresce">
+            <ul className="lista-incs">
+              {lista.map((i) => (
+                <li key={i.id} className={i.id === atualId ? 'ativo' : ''} onClick={() => setAtualId(i.id)}>
+                  <div className="inc-topo">
+                    {!unico && <input type="checkbox" checked={marcadas.has(i.id)} onClick={(e) => e.stopPropagation()} onChange={() => marcar(i.id)} />}
+                    <span className={`sev sev-${i.severidade}`} /><b>#{i.id} {i.nome}</b><Classe c={i.classificacao} />
+                  </div>
+                  <div className="inc-desc">{i.descricao}</div>
+                  <div className="inc-rodape"><Estado s={i.status} /><small>{i.temCorrecao ? 'correção automática' : 'manual'}</small></div>
+                </li>
+              ))}
+              {!lista.length && <li className="vazio">Nenhuma ocorrência neste filtro.</li>}
+            </ul>
+          </section>
+          <div className="rodape-painel">
+            <button className="btn primario largo" disabled={!aprovadas} onClick={prosseguir}
+              title={!aprovadas ? 'Aprove pelo menos uma correção para seguir' : ''}>
+              Seguir para a correção ({aprovadas} aprovada{aprovadas === 1 ? '' : 's'}) →
+            </button>
+            <small className="sub">Só as aprovadas serão executadas. Pendentes e rejeitadas continuam registradas.</small>
           </div>
+        </aside>
+
+        <div className="comparacao">
+          <div className="dois-mapas">
+            <Mapa aoCriar={aoCriarMapa} camadas={esquerda} enquadrar={enquadrar} chaveEnquadrar={det?.id}
+              rotulo="Geometria original" className="lado-original"
+              legenda={[{ texto: 'Feição envolvida', cor: ESTILOS.original.color }, { texto: 'Trecho apontado', cor: ESTILOS.erro.color, fundo: ESTILOS.erro.fillColor },
+                { texto: 'Vizinhos', cor: ESTILOS.vizinho.color }]} />
+            <Mapa aoCriar={aoCriarMapa} camadas={direita} rotulo={det && det.manual ? 'Sem correção automática' : 'Prévia da correção (cópia)'}
+              className="lado-proposta"
+              legenda={[{ texto: 'Resultado esperado', cor: ESTILOS.proposta.color }, { texto: 'Onde estava o problema', cor: '#fff' }]} />
+            {atualId && !det && <div className="mapa-carregando">Carregando…</div>}
+          </div>
+
+          {det && (
+            <div className="decisao">
+              <div className="decisao-info">
+                <div className="inc-topo">
+                  <span className={`sev sev-${det.severidade}`} /><b>#{det.id} · {det.grupo} · {det.nome}</b>
+                  <Classe c={det.classificacao} /><Estado s={det.status} />
+                  <span className="sub">Severidade {SEVERIDADE[det.severidade]} · {pos + 1} de {lista.length}</span>
+                </div>
+                <p><b>{det.descricao}</b></p>
+                <div className="detalhe-grade">
+                  <div>
+                    <h4>Por que foi apontada</h4>
+                    <p>{det.motivo}</p>
+                    <h4>Ação proposta</h4>
+                    <p>{det.manual ? <b className="laranja">Intervenção manual necessária: não há correção automática para este caso.</b> : det.operacao}</p>
+                    {det.limitacoes && <><h4>Limitações e riscos</h4><p>{det.limitacoes}</p></>}
+                    {det.validacao?.length > 0 && (
+                      <><h4>Última validação</h4>
+                        <ul className="validacao">{det.validacao.map((v) => <li key={v.nome} className={v.ok ? 'ok' : 'nok'}>{v.ok ? '✓' : '✗'} {v.nome}: {v.detalhe}</li>)}</ul></>
+                    )}
+                  </div>
+                  <div>
+                    <h4>Características</h4>
+                    <dl className="dl">
+                      {Object.entries(det.caracteristicas).map(([k, v]) => (
+                        <ItemDl key={k} rot={ROTULO_CARAC[k] || k} v={Array.isArray(v) ? v.join(', ') : typeof v === 'boolean' ? (v ? 'sim' : 'não') : v} />
+                      ))}
+                    </dl>
+                  </div>
+                </div>
+                <h4>Feições envolvidas</h4>
+                <table className="tabela compacta">
+                  <thead><tr><th>Feição</th><th>Camada / registro</th><th>Fazenda</th><th>Medida antes → depois</th><th>Vértices</th><th>Partes</th><th>Válida</th></tr></thead>
+                  <tbody>
+                    {det.envolvidas.map((e) => (
+                      <tr key={e.id} className={e.alvo ? 'alvo' : ''}>
+                        <td>{e.linha ? 'Linha' : `Talhão ${e.talhao || '?'}`}{e.aglomerado ? ` (${e.aglomerado})` : ''} <small>#{e.id}</small>{e.alvo ? ' ✎' : ''}</td>
+                        <td>{e.camada} / {e.indiceOrigem + 1}</td>
+                        <td>{e.fazenda || '—'}</td>
+                        <td>{e.linha ? `${num(e.antes.comprimentoM, 1)} → ${num(e.depois.comprimentoM, 1)} m`
+                          : e.removida ? `${num(e.antes.areaHa, 4)} ha → removido` : `${num(e.antes.areaHa, 4)} → ${num(e.depois.areaHa, 4)} ha`}
+                          {!e.linha && !e.removida && e.depois.areaHa !== e.antes.areaHa && <small> ({e.depois.areaHa > e.antes.areaHa ? '+' : '−'}{area(Math.abs(e.depois.areaHa - e.antes.areaHa) * 1e4)})</small>}</td>
+                        <td>{e.antes.vertices} → {e.depois.vertices}</td>
+                        <td>{e.antes.partes} → {e.depois.partes}</td>
+                        <td>{e.antes.valida ? 'sim' : 'não'} → {e.depois.valida ? 'sim' : 'não'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {det.historico?.length > 0 && (
+                  <details className="historico"><summary>Histórico ({det.historico.length})</summary>
+                    <ul>{det.historico.map((h, k) => <li key={k}>{data(h.dataHora)} · <b>{h.estado}</b> · {h.usuario}{h.execucaoId ? ` · execução #${h.execucaoId}` : ''}{h.nota ? ` — ${h.nota}` : ''}</li>)}</ul>
+                  </details>
+                )}
+              </div>
+              <div className="decisao-botoes">
+                <div className="nav-setas">
+                  <button className="btn pequeno" disabled={pos <= 0} onClick={() => setAtualId(lista[pos - 1].id)}>↑ Anterior</button>
+                  <button className="btn pequeno" disabled={pos >= lista.length - 1} onClick={() => setAtualId(lista[pos + 1].id)}>Próxima ↓</button>
+                </div>
+                <button className={`btn grande primario ${det.status === 'aprovada' ? 'escolhido-aceitar' : ''}`}
+                  disabled={salvando || det.manual || !DECIDIVEL(det)} onClick={() => decidir([det.id], 'aprovar')}>
+                  Aprovar correção <kbd>A</kbd>
+                </button>
+                <button className={`btn grande ${det.status === 'rejeitada' ? 'escolhido-manter' : ''}`} disabled={salvando || !DECIDIVEL(det)}
+                  onClick={() => decidir([det.id], 'rejeitar')}>
+                  Rejeitar correção <kbd>R</kbd>
+                </button>
+                <button className={`btn ${det.status === 'pendente' ? 'escolhido-manter' : ''}`} disabled={salvando || !DECIDIVEL(det)}
+                  onClick={() => decidir([det.id], 'pendente')}>
+                  Manter pendente <kbd>P</kbd>
+                </button>
+                <small className="sub">Aprovar autoriza a correção; ela só conta como <b>corrigida</b> depois de executada e validada na etapa 3.</small>
+              </div>
+            </div>
+          )}
         </div>
-      )}
+      </div>
     </div>
   )
+}
+
+function ItemDl({ rot, v }) {
+  return <><dt>{rot}</dt><dd>{v}</dd></>
 }

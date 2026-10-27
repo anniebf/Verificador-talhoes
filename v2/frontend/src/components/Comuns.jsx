@@ -72,16 +72,24 @@ export function Aviso({ tipo = 'erro', children, aoFechar }) {
 
 export const SEVERIDADE = { alta: 'Alta', media: 'Média', baixa: 'Baixa' }
 
+// estados das ocorrências (seção 4 da documentação funcional)
 export const STATUS = {
+  identificada: { texto: 'Identificada', cls: 'st-identificada' },
+  em_revisao: { texto: 'Em revisão', cls: 'st-em_revisao' },
+  aprovada: { texto: 'Aprovada', cls: 'st-aprovada' },
+  rejeitada: { texto: 'Rejeitada', cls: 'st-rejeitada' },
   pendente: { texto: 'Pendente', cls: 'st-pendente' },
-  aceita: { texto: 'Aceitar correção', cls: 'st-aceita' },
-  rejeitada: { texto: 'Manter original', cls: 'st-rejeitada' },
-  aplicada: { texto: 'Corrigida', cls: 'st-aplicada' },
-  mantida: { texto: 'Mantida', cls: 'st-mantida' },
+  corrigida: { texto: 'Corrigida', cls: 'st-corrigida' },
+  falha: { texto: 'Falha na correção', cls: 'st-falha' },
+  nao_corrigivel: { texto: 'Não corrigível automaticamente', cls: 'st-nao_corrigivel' },
 }
+export const Estado = ({ s }) => <span className={`etiqueta ${STATUS[s]?.cls || ''}`}>{STATUS[s]?.texto || s}</span>
+
+export const CLASSIFICACAO = { confirmado: 'Confirmado', suspeito: 'Suspeito', inconclusivo: 'Inconclusivo' }
+export const Classe = ({ c }) => <span className={`etiqueta cl-${c}`} title="Classificação da ocorrência">{CLASSIFICACAO[c] || c}</span>
 
 export function nomeFazenda(f) {
   if (!f) return ''
-  if (f.codigo === '') return 'Sem fazenda'
+  if (f.codigo === '') return f.nome || 'Sem fazenda'
   return f.nome ? `${f.codigo} · ${f.nome}` : f.codigo
 }

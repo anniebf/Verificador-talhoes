@@ -58,7 +58,7 @@ def como_json(l: Log, com_geom=False):
 
 ACOES = {
     'login': 'Login', 'importacao': 'Importação', 'mesclagem': 'Mesclagem', 'auditoria': 'Auditoria',
-    'decisao': 'Decisão', 'correcao': 'Correção aplicada', 'mantido': 'Original mantido', 'versao': 'Nova versão',
+    'decisao': 'Decisão', 'correcao': 'Correção', 'falha': 'Falha na correção', 'versao': 'Nova versão',
     'exportacao': 'Exportação', 'usuario': 'Usuários', 'regra': 'Regras', 'lote': 'Lote',
 }
 

@@ -40,9 +40,12 @@ def preparar_pasta(arquivos):
         shps = sorted(p for p in pasta.rglob('*') if p.suffix.lower() == '.shp' and '__MACOSX' not in p.parts)
         if not shps:
             raise ErroArquivo('Não achei nenhum .shp nos arquivos enviados. Confira se a camada foi compactada com todos os arquivos dela.')
+        # 3.1.1: .shp, .shx e .dbf são obrigatórios
         for shp in shps:
-            if not any(shp.with_suffix(e).exists() for e in ('.dbf', '.DBF')):
-                raise ErroArquivo(f'Achei {shp.name}, mas falta o .dbf com o mesmo nome (a tabela de atributos).')
+            for ext, papel in (('.shx', 'o índice das geometrias'), ('.dbf', 'a tabela de atributos')):
+                if irmao(shp, ext) is None:
+                    raise ErroArquivo(f'Achei {shp.name}, mas falta o {ext} com o mesmo nome ({papel}). '
+                                      'Envie a camada com todos os arquivos (.shp, .shx, .dbf e, de preferência, .prj).')
         return pasta, shps
     except Exception:
         shutil.rmtree(pasta, ignore_errors=True)
@@ -77,11 +80,13 @@ def _extrair_zip(dados, destino):
 
 
 def _extrair_rar(dados, nome, destino):
-    """O .rar é aberto com o tar do Windows (libarchive), 7-Zip ou unrar, o que existir."""
+    """O .rar é aberto com bsdtar (o tar do Windows), 7-Zip ou unrar, o que existir."""
     destino.mkdir(parents=True, exist_ok=True)
     arq = destino.parent / (_seguro(nome))
     arq.write_bytes(dados)
-    tentativas = [['tar', '-xf', str(arq), '-C', str(destino)], ['7z', 'x', '-y', f'-o{destino}', str(arq)],
+    # bsdtar/tar do Windows (libarchive) abrem .rar; o tar do GNU não, então ele fica por último
+    tentativas = [['bsdtar', '-xf', str(arq), '-C', str(destino)], ['7z', 'x', '-y', f'-o{destino}', str(arq)],
+                  ['tar', '-xf', str(arq), '-C', str(destino)],
                   ['unrar', 'x', '-o+', str(arq), str(destino) + '/']]
     for cmd in tentativas:
         if not shutil.which(cmd[0]):
@@ -98,20 +103,54 @@ def _extrair_rar(dados, nome, destino):
             p.unlink(missing_ok=True)
 
 
+def irmao(shp, ext):
+    """Arquivo da mesma camada com outra extensão (sem diferença de maiúscula)."""
+    alvo = (shp.stem + ext).lower()
+    return next((p for p in shp.parent.iterdir() if p.name.lower() == alvo), None)
+
+
+TIPOS = {'Polygon': 'poligono', 'MultiPolygon': 'poligono', 'LineString': 'linha', 'MultiLineString': 'linha'}
+
+
 def ler_shapefile(shp: Path):
-    """GeoDataFrame só com polígonos 2D. O encoding vem do .cpg; sem ele, latin1 (padrão do ArcGIS/QGIS antigos)."""
-    tem_cpg = any(shp.with_suffix(e).exists() for e in ('.cpg', '.CPG'))
+    """Lê e valida uma camada (3.1.1). Devolve (GeoDataFrame 2D, 'poligono'|'linha', [avisos]).
+
+    O encoding vem do .cpg; sem ele, latin1 (padrão do ArcGIS/QGIS antigos).
+    """
+    from pyproj import CRS
+    avisos = []
+    prj = irmao(shp, '.prj')
+    if prj is None:
+        avisos.append(f'{shp.name}: sem .prj (sistema de coordenadas não informado).')
+    else:
+        try:
+            CRS.from_wkt(prj.read_text(encoding='latin1'))
+        except Exception:  # noqa: BLE001
+            avisos.append(f'{shp.name}: o .prj existe mas não é um sistema de coordenadas válido; ele foi ignorado.')
+    cpg = irmao(shp, '.cpg')
+    if cpg is None:
+        avisos.append(f'{shp.name}: sem .cpg; textos lidos como Latin-1.')
     try:
-        gdf = pyogrio.read_dataframe(shp, encoding=None if tem_cpg else 'latin1')
-    except Exception as e:
-        raise ErroArquivo(f'Não consegui ler {shp.name}: {e}')
+        gdf = pyogrio.read_dataframe(shp, encoding=None if cpg else 'latin1')
+    except Exception as e:  # noqa: BLE001
+        raise ErroArquivo(f'Não consegui ler {shp.name}: o arquivo parece corrompido ou incompleto ({e}).')
     if gdf.geometry.name != 'geometry':
         gdf = gdf.rename_geometry('geometry')
+    if prj is not None and gdf.crs is None:
+        avisos.append(f'{shp.name}: o .prj não pôde ser interpretado.')
     tipos = set(gdf.geometry.dropna().geom_type)
-    if tipos and not tipos & {'Polygon', 'MultiPolygon'}:
-        raise ErroArquivo(f'{shp.name} não é uma camada de polígonos ({", ".join(sorted(tipos))}).')
+    if not tipos:
+        avisos.append(f'{shp.name}: nenhuma geometria preenchida.')
+    familias = {TIPOS.get(t) for t in tipos}
+    if None in familias:
+        raise ErroArquivo(f'{shp.name} tem geometrias de tipo não suportado ({", ".join(sorted(tipos))}). '
+                          'As regras de auditoria valem para polígonos (talhões) e linhas (estradas).')
+    if len(familias) > 1:
+        raise ErroArquivo(f'{shp.name} mistura polígonos e linhas; separe em duas camadas.')
+    if any(z for z in gdf.geometry.dropna().has_z):
+        avisos.append(f'{shp.name}: coordenadas Z descartadas (a auditoria é 2D).')
     gdf['geometry'] = shapely.force_2d(gdf.geometry.values)
-    return gdf
+    return gdf, (familias.pop() if familias else 'poligono'), avisos
 
 
 def simples(texto):

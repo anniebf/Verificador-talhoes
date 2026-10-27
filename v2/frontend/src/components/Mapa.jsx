@@ -24,6 +24,8 @@ export default function Mapa({ camadas = [], enquadrar, chaveEnquadrar, aoCriar,
   const div = useRef(null)
   const mapa = useRef(null)
   const grupo = useRef(null)
+  const ultimo = useRef(null)   // último enquadramento pedido
+  const mexeu = useRef(false)   // o usuário já moveu/zoom no mapa depois dele
 
   useEffect(() => {
     const m = L.map(div.current, { zoomControl: true, preferCanvas: true, attributionControl: true })
@@ -35,8 +37,14 @@ export default function Mapa({ camadas = [], enquadrar, chaveEnquadrar, aoCriar,
     grupo.current = L.layerGroup().addTo(m)
     mapa.current = m
     const desfazer = aoCriar?.(m)
-    const obs = new ResizeObserver(() => m.invalidateSize())
+    // se o painel muda de tamanho antes de o usuário mexer no mapa, reenquadra no que foi pedido
+    const obs = new ResizeObserver(() => {
+      m.invalidateSize()
+      if (ultimo.current && !mexeu.current) m.fitBounds(ultimo.current, { padding: [30, 30], maxZoom: 18, animate: false })
+    })
     obs.observe(div.current)
+    const marcar = () => { mexeu.current = true }
+    for (const ev of ['mousedown', 'wheel', 'touchstart']) div.current.addEventListener(ev, marcar, { passive: true })
     return () => { obs.disconnect(); desfazer?.(); m.remove(); mapa.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -73,7 +81,11 @@ export default function Mapa({ camadas = [], enquadrar, chaveEnquadrar, aoCriar,
       if (!lista.length) return
       b = L.featureGroup(lista.map((x) => L.geoJSON(x))).getBounds()
     }
-    if (b.isValid()) m.fitBounds(b, { padding: [30, 30], maxZoom: 18, animate: false })
+    if (b.isValid()) {
+      ultimo.current = b
+      mexeu.current = false
+      m.fitBounds(b, { padding: [30, 30], maxZoom: 18, animate: false })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chaveEnquadrar])
 
@@ -114,4 +126,6 @@ export const ESTILOS = {
   original: { color: '#ff8c1a', weight: 2.5, fillColor: '#ff8c1a', fillOpacity: 0.15 },
   proposta: { color: '#3ddc84', weight: 2.5, fillColor: '#3ddc84', fillOpacity: 0.25 },
   alterado: { color: '#3ddc84', weight: 2.5, fillColor: '#3ddc84', fillOpacity: 0.3 },
+  estrada: { color: '#60a5fa', weight: 3, opacity: 0.95 },
+  estradaErro: { color: '#c084fc', weight: 3.5, opacity: 1 },
 }

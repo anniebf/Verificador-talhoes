@@ -1,21 +1,21 @@
-"""Etapa 1 (detecção) e as operações de correção usadas nas etapas 2 e 3.
+"""Etapa 1: detecção das inconsistências. Este módulo só lê geometrias, nunca altera dados.
 
 As geometrias ficam no sistema de coordenadas do lote; o `Medidor` converte para metros só para
-medir (área, largura, tolerância). Cada inconsistência leva uma `op`: a receita da correção, que é
-aplicada sobre a geometria atual na hora (não uma geometria pronta), então várias correções no
-mesmo talhão se somam sem uma desfazer a outra.
+medir (área, largura, tolerância). Cada ocorrência leva:
+- `classificacao`: confirmado, suspeito ou inconclusivo;
+- `motivo`: por que a regra apontou, com os números que ela usou;
+- `caracteristicas`: medidas da geometria relevantes para a revisão;
+- `op`: a receita da correção proposta (aplicada pelo módulo `correcao`), ou None quando só cabe
+  intervenção manual.
 """
 import re
 
 import numpy as np
 import shapely
 from pyproj import CRS, Transformer
-from shapely import MultiPoint, MultiPolygon, Point, Polygon
+from shapely import LineString, MultiPoint, MultiPolygon, Point, Polygon
 
-from .regras import ESTRADA, PADRAO
-
-ORDEM_OPS = ['remover_feicao', 'tornar_valida', 'remover_repetidos', 'preencher_buraco', 'remover_parte',
-             'simplificar', 'subtrair', 'anexar']
+from .regras import ALONGAMENTO_ESTRADA, PADRAO
 
 
 # ---------- geometria ----------
@@ -27,6 +27,16 @@ def poligonos(g):
         return [g]
     if g.geom_type in ('MultiPolygon', 'GeometryCollection'):
         return [p for parte in shapely.get_parts(g) for p in poligonos(parte)]
+    return []
+
+
+def linhas(g):
+    if g is None or g.is_empty:
+        return []
+    if g.geom_type == 'LineString':
+        return [g]
+    if g.geom_type in ('MultiLineString', 'GeometryCollection'):
+        return [p for parte in shapely.get_parts(g) for p in linhas(parte)]
     return []
 
 
@@ -80,6 +90,9 @@ class Medidor:
     def area(self, g):
         return float(shapely.area(self.m(g))) if g is not None else 0.0
 
+    def comprimento(self, g):
+        return float(shapely.length(self.m(g))) if g is not None else 0.0
+
     def tol(self, metros):
         return metros * self.fator
 
@@ -115,14 +128,17 @@ def crs_metrico_para(crs_wkt, bounds):
     return f'EPSG:{info[0].code}' if info else 'EPSG:3857'
 
 
-def estrada(gm):
-    """Faixa estreita e comprida (em metros)?"""
+def forma(gm):
+    """Largura média (2·área/perímetro) e comprimento (perímetro/2) de uma área, em metros."""
     p = gm.length
     if not p:
-        return False
-    largura, comprimento = 2 * gm.area / p, p / 2
-    return (ESTRADA['largura_min'] <= largura <= ESTRADA['largura_max'] and comprimento >= ESTRADA['comprimento_min']
-            and comprimento >= ESTRADA['alongamento_min'] * largura)
+        return 0.0, 0.0
+    return 2 * gm.area / p, p / 2
+
+
+def eh_estrada(largura, comprimento, p):
+    return (p['largura_min_m'] <= largura <= p['largura_max_m'] and comprimento >= p['comprimento_min_m']
+            and comprimento >= ALONGAMENTO_ESTRADA * largura)
 
 
 MOTIVOS = {
@@ -167,80 +183,150 @@ def fmt_area(m2):
         f'{m2:,.1f} m²'.replace(',', 'X').replace('.', ',').replace('X', '.')
 
 
+def fmt_m(m):
+    return f'{m:,.1f} m'.replace(',', 'X').replace('.', ',').replace('X', '.')
+
+
+def rotulo(f):
+    if f.get('linha'):
+        return f"Linha #{f['indice'] + 1}" + (f" ({f['camada']})" if f.get('camada') else '')
+    return f"Talhão {f['talhao'] or '?'}" + (f" ({f['aglomerado']})" if f.get('aglomerado') else '')
+
+
+def _ponto(g):
+    p = g.representative_point()
+    return [p.x, p.y]
+
+
 # ---------- detecção ----------
-def auditar(feicoes, med, regras):
-    """feicoes: [{'id','fazenda','aglomerado','talhao','geom'}]. Devolve a lista de inconsistências."""
+def auditar(feicoes, med, regras, fazendas_alvo=None):
+    """feicoes: [{'id','fazenda','aglomerado','talhao','linha','indice','camada','geom'}].
+
+    `fazendas_alvo`: numa reauditoria parcial, as linhas de estrada entram todas como contexto,
+    mas só geram ocorrências próprias quando a fazenda delas está no alvo.
+    """
     ativa = lambda k: regras[k]['params'] if regras.get(k, {}).get('ativo') else None
     out = []
     nome = {f['id']: rotulo(f) for f in feicoes}
+    no_alvo = lambda f: fazendas_alvo is None or f['fazenda'] in fazendas_alvo
 
-    def add(tipo, f, descricao, destaque=None, area=0.0, op=None, outros=()):
+    def add(tipo, f, descricao, motivo, classificacao, destaque=None, area=0.0, op=None, outros=(), carac=None, extra_assin=''):
         ids = [f['id'], *[o['id'] for o in outros]]
         out.append({'tipo': tipo, 'severidade': PADRAO[tipo]['severidade'], 'fazenda': f['fazenda'], 'feicoes': ids,
-                    'descricao': descricao, 'area_m2': float(area), 'destaque': destaque, 'op': op,
-                    'assinatura': f"{tipo}|{','.join(map(str, sorted(ids)))}|{round(area)}"})
+                    'descricao': descricao, 'motivo': motivo, 'classificacao': classificacao,
+                    'caracteristicas': {k: v for k, v in (carac or {}).items() if v is not None},
+                    'area_m2': float(area), 'destaque': destaque, 'op': op,
+                    'assinatura': f"{tipo}|{','.join(map(str, sorted(ids)))}|{round(area)}{extra_assin}"})
 
-    # geometria vazia / inválida; G = versão utilizável para as contas topológicas
-    G = [None] * len(feicoes)
-    # área medida já na versão válida: uma "gravata" tem área assinada zero, mas não é vazia
-    limpas = [limpar(f['geom']) for f in feicoes]
-    areas_m = shapely.area(med.m(np.array(limpas, dtype=object))) if feicoes else []
-    for k, f in enumerate(feicoes):
+    pol = [f for f in feicoes if not f.get('linha')]
+    lin = [f for f in feicoes if f.get('linha')]
+    est = ativa('corte_estrada')
+
+    # ---- A. vazias e inválidas; G = versão utilizável para as contas topológicas
+    G = [None] * len(pol)
+    limpas = [limpar(f['geom']) for f in pol]
+    areas_m = shapely.area(med.m(np.array(limpas, dtype=object))) if pol else []
+    for k, f in enumerate(pol):
         g = f['geom']
         if g is None or g.is_empty or limpas[k] is None or not (areas_m[k] >= 0.01):
             if ativa('geometria_vazia') is not None:
-                add('geometria_vazia', f, f'{nome[f["id"]]}: sem desenho ou desenho sem área.',
-                    destaque=g.centroid if g is not None and not g.is_empty else None,
-                    op={'tipo': 'remover_feicao', 'alvo': f['id']})
+                vazio = g is None or g.is_empty
+                add('geometria_vazia', f, f'{nome[f["id"]]}: {"sem desenho" if vazio else "desenho sem área"}.',
+                    'A geometria está vazia.' if vazio else f'A área válida do desenho é {fmt_area(float(areas_m[k] or 0))} (menos de 0,01 m²): é um risco ou um ponto.',
+                    'confirmado', destaque=g.centroid if not vazio else None,
+                    op={'tipo': 'remover_feicao', 'alvo': f['id']}, carac={'vertices': int(shapely.get_num_coordinates(g)) if g is not None else 0})
             continue
         if not g.is_valid:
             motivo, onde = _motivo(g)
             if ativa('autointersecao') is not None:
-                add('autointersecao', f, f'{nome[f["id"]]}: {motivo}.', destaque=onde,
-                    op={'tipo': 'tornar_valida', 'alvo': f['id']})
+                add('autointersecao', f, f'{nome[f["id"]]}: {motivo}.',
+                    f'O validador de geometrias (GEOS) recusou o desenho: "{shapely.is_valid_reason(g)}".', 'confirmado',
+                    destaque=onde, op={'tipo': 'tornar_valida', 'alvo': f['id']},
+                    carac={'motivo_geos': shapely.is_valid_reason(g), 'partes_apos_reparo': len(poligonos(limpas[k])),
+                           'area_apos_reparo_ha': round(float(areas_m[k]) / 1e4, 4)})
             G[k] = limpas[k]
         else:
             G[k] = g
 
     validos = [k for k, g in enumerate(G) if g is not None]
+    # partes e buracos de um desenho inválido só fazem sentido depois do reparo (a reauditoria pega)
+    integros = [k for k in validos if pol[k]['geom'].is_valid]
     GM = {k: gm for k, gm in zip(validos, med.m(np.array([G[k] for k in validos], dtype=object)))} if validos else {}
 
     if (p := ativa('vertices_duplicados')) is not None:
         tol = med.tol(p['tolerancia_m'])
-        for k, f in enumerate(feicoes):
+        for f in pol:
             if f['geom'] is None or f['geom'].is_empty:
                 continue
             pts = _repetidos(f['geom'], tol)
             if pts:
                 add('vertices_duplicados', f, f'{nome[f["id"]]}: {len(pts)} vértice(s) repetido(s).',
+                    f'Há {len(pts)} vértice(s) a menos de {p["tolerancia_m"]} m do vértice anterior.', 'confirmado',
                     destaque=MultiPoint(pts) if len(pts) > 1 else Point(pts[0]),
-                    op={'tipo': 'remover_repetidos', 'alvo': f['id'], 'tol': tol})
+                    op={'tipo': 'remover_repetidos', 'alvo': f['id'], 'tol': tol},
+                    carac={'repetidos': len(pts), 'vertices': int(shapely.get_num_coordinates(f['geom']))})
 
-    if (p := ativa('buraco_interno')) is not None:
-        for k in validos:
-            for parte in poligonos(G[k]):
-                for anel in parte.interiors:
-                    furo = Polygon(anel)
-                    fm = med.m(furo)
-                    if fm.area > p['area_max_ha'] * 1e4 or (p['ignorar_estradas'] and estrada(fm)):
-                        continue
-                    add('buraco_interno', feicoes[k], f'{nome[feicoes[k]["id"]]}: buraco de {fmt_area(fm.area)}.',
-                        destaque=furo, area=fm.area,
-                        op={'tipo': 'preencher_buraco', 'alvo': feicoes[k]['id'], 'ponto': _ponto(furo)})
-
+    # ---- B. múltiplas partes (e faixas de estrada entre elas)
     if (p := ativa('parte_solta')) is not None:
-        for k in validos:
+        for k in integros:
             partes = poligonos(G[k])
             if len(partes) < 2:
                 continue
             am = [med.area(x) for x in partes]
+            total = sum(am)
             principal = int(np.argmax(am))
+            pm = med.m(partes[principal])
             for i, (parte, a) in enumerate(zip(partes, am)):
-                if i != principal and a <= p['area_max_ha'] * 1e4:
-                    add('parte_solta', feicoes[k], f'{nome[feicoes[k]["id"]]}: parte solta de {fmt_area(a)}.',
-                        destaque=parte, area=a,
-                        op={'tipo': 'remover_parte', 'alvo': feicoes[k]['id'], 'ponto': _ponto(parte)})
+                if i == principal:
+                    continue
+                f = pol[k]
+                xm = med.m(parte)
+                vao = float(xm.distance(pm))
+                if est is not None and est['largura_min_m'] <= vao <= est['largura_max_m']:
+                    junto = float(shapely.length(shapely.intersection(xm.exterior, pm.buffer(vao + 1))))
+                    if junto >= est['comprimento_min_m']:
+                        add('corte_estrada', f, f'{nome[f["id"]]}: parte separada do resto por uma faixa de {fmt_m(vao)} ao longo de {fmt_m(junto)}.',
+                            f'O vão entre a parte e o contorno principal tem largura entre {est["largura_min_m"]} e {est["largura_max_m"]} m '
+                            f'e acompanha a borda por pelo menos {est["comprimento_min_m"]} m: formato de estrada.', 'suspeito',
+                            destaque=parte, area=a, carac={'largura_m': round(vao, 1), 'comprimento_m': round(junto), 'onde': 'entre partes'})
+                        continue
+                razao = a / total * 100 if total else 0
+                pode = a <= p['area_max_ha'] * 1e4 and razao <= p['razao_max_pct']
+                motivo = (f'O talhão tem {len(partes)} componentes separados; este tem {fmt_area(a)} ({razao:.1f}% do talhão). ')
+                motivo += (f'Está dentro dos critérios para propor a remoção (até {p["area_max_ha"]} ha e {p["razao_max_pct"]}%).' if pode
+                           else f'Fora dos critérios de remoção (até {p["area_max_ha"]} ha e {p["razao_max_pct"]}%): avaliar à mão.')
+                add('parte_solta', f, f'{nome[f["id"]]}: parte separada de {fmt_area(a)} ({razao:.1f}% do talhão).', motivo, 'suspeito',
+                    destaque=parte, area=a, op={'tipo': 'remover_parte', 'alvo': f['id'], 'ponto': _ponto(parte)} if pode else None,
+                    carac={'partes': len(partes), 'area_parte_ha': round(a / 1e4, 4), 'percentual_do_talhao': round(razao, 2),
+                           'distancia_ao_principal_m': round(vao, 1)})
 
+    # ---- C. buracos (os com formato de estrada vão para D)
+    if (p := ativa('buraco_interno')) is not None:
+        for k in integros:
+            f = pol[k]
+            for parte in poligonos(G[k]):
+                for anel in parte.interiors:
+                    furo = Polygon(anel)
+                    fm = med.m(furo)
+                    if fm.area > p['area_max_ha'] * 1e4:
+                        continue
+                    larg, comp = forma(fm)
+                    if est is not None and eh_estrada(larg, comp, est):
+                        add('corte_estrada', f, f'{nome[f["id"]]}: faixa vazia de {fmt_m(larg)} x {fmt_m(comp)} atravessando o talhão.',
+                            f'Buraco estreito e comprido (largura {larg:.1f} m, comprimento {comp:.0f} m, {comp / max(larg, .1):.0f}x mais comprido que largo).',
+                            'suspeito', destaque=furo, area=fm.area,
+                            carac={'largura_m': round(larg, 1), 'comprimento_m': round(comp), 'area_ha': round(fm.area / 1e4, 4), 'onde': 'dentro do talhão'})
+                        continue
+                    pode = fm.area <= p['area_max_preencher_ha'] * 1e4
+                    add('buraco_interno', f, f'{nome[f["id"]]}: buraco de {fmt_area(fm.area)}.',
+                        f'Anel interno de {fmt_area(fm.area)}. ' + (f'Até {p["area_max_preencher_ha"]} ha: pode ser preenchido.' if pode
+                                                                   else f'Acima de {p["area_max_preencher_ha"]} ha: avaliar à mão (reserva, sede, açude…).'),
+                        'suspeito', destaque=furo, area=fm.area,
+                        op={'tipo': 'preencher_buraco', 'alvo': f['id'], 'ponto': _ponto(furo)} if pode else None,
+                        carac={'area_ha': round(fm.area / 1e4, 4), 'perimetro_m': round(fm.length), 'largura_media_m': round(larg, 1),
+                               'percentual_do_talhao': round(fm.area / GM[k].area * 100, 2) if GM[k].area else None})
+
+    # ---- desempenho: excesso de vértices
     if (p := ativa('excesso_vertices')) is not None:
         for k in validos:
             nv = int(shapely.get_num_coordinates(G[k]))
@@ -255,16 +341,18 @@ def auditar(feicoes, med, regras):
             if nv1 >= nv:
                 continue
             ok = abs(var) <= p['variacao_area_max_pct']
-            txt = (f'{nome[feicoes[k]["id"]]}: {nv:,} vértices → {nv1:,} simplificando com {p["tolerancia_m"]} m '
-                   f'(área {var:+.2f}%).').replace(',', '.')
-            if not ok:
-                txt += ' A área mudaria acima do limite: revise à mão.'
-            add('excesso_vertices', feicoes[k], txt, area=gm.area,
-                op={'tipo': 'simplificar', 'alvo': feicoes[k]['id'], 'tol_m': p['tolerancia_m']} if ok else None)
+            f = pol[k]
+            add('excesso_vertices', f, f'{nome[f["id"]]}: {nv:,} vértices → {nv1:,} com tolerância de {p["tolerancia_m"]} m (área {var:+.2f}%).'.replace(',', '.'),
+                f'{nv} vértices, um a cada {gm.length / nv:.1f} m (limite: {p["max_vertices"]} vértices ou {p["espacamento_min_m"]} m). '
+                + ('A simplificação muda a área dentro do limite.' if ok else f'A simplificação mudaria a área em {var:+.2f}% (limite {p["variacao_area_max_pct"]}%): avaliar à mão.'),
+                'suspeito', area=gm.area,
+                op={'tipo': 'simplificar', 'alvo': f['id'], 'tol_m': p['tolerancia_m'], 'var_max': p['variacao_area_max_pct']} if ok else None,
+                carac={'vertices': nv, 'vertices_depois': nv1, 'espacamento_medio_m': round(gm.length / nv, 2), 'variacao_area_pct': round(var, 3)})
 
     arr = np.array([G[k] for k in validos], dtype=object)
     arvore = shapely.STRtree(arr) if validos else None
 
+    # ---- E. sobreposições
     if (p := ativa('sobreposicao')) is not None and validos:
         a_idx, b_idx = arvore.query(arr, predicate='intersects')
         sel = a_idx < b_idx
@@ -283,16 +371,20 @@ def auditar(feicoes, med, regras):
                 maior = ka if GM[ka].area >= GM[kb].area else kb
                 alvo = maior if p['recortar_de'] == 'maior' else (kb if maior == ka else ka)
                 outro = kb if alvo == ka else ka
-                fa, fb = feicoes[alvo], feicoes[outro]
-                add('sobreposicao', fa, f'{nome[fa["id"]]} e {nome[fb["id"]]} se sobrepõem em {fmt_area(a)}. '
-                    f'Proposta: recortar de {nome[fa["id"]]}.', destaque=inter, area=a, outros=[fb],
-                    op={'tipo': 'subtrair', 'alvo': fa['id'], 'area': wkb_hex(inter)})
+                fa, fb = pol[alvo], pol[outro]
+                add('sobreposicao', fa, f'{nome[fa["id"]]} e {nome[fb["id"]]} se sobrepõem em {fmt_area(a)}. Proposta: recortar de {nome[fa["id"]]}.',
+                    f'A interseção entre os dois tem {fmt_area(a)} (mínimo para apontar: {p["area_min_m2"]} m²).', 'confirmado',
+                    destaque=inter, area=a, outros=[fb], op={'tipo': 'subtrair', 'alvo': fa['id'], 'area': wkb_hex(inter), 'outro': fb['id']},
+                    carac={'area_m2': round(float(a), 2), 'percentual_alvo': round(a / GM[alvo].area * 100, 2),
+                           'percentual_outro': round(a / GM[outro].area * 100, 2),
+                           'fazendas': sorted({fa['fazenda'], fb['fazenda']})})
 
+    # ---- E. lacunas (vão fechado entre vizinhos; faixas de estrada vão para D)
     if (p := ativa('lacuna')) is not None and validos:
         eps = med.tol(0.05)
         por_faz = {}
         for k in validos:
-            por_faz.setdefault(feicoes[k]['fazenda'], []).append(k)
+            por_faz.setdefault(pol[k]['fazenda'], []).append(k)
         for faz, ks in por_faz.items():
             if len(ks) < 2:
                 continue
@@ -301,10 +393,10 @@ def auditar(feicoes, med, regras):
                 for anel in parte.interiors:
                     vao = Polygon(anel)
                     vm = med.m(vao)
-                    if not (p['area_min_m2'] <= vm.area <= p['area_max_m2']) or (p['ignorar_estradas'] and estrada(vm)):
+                    if not (p['area_min_m2'] <= vm.area <= p['area_max_m2']):
                         continue
                     viz = [validos[i] for i in arvore.query(vao.buffer(eps), predicate='intersects')]
-                    viz = [k for k in viz if feicoes[k]['fazenda'] == faz]
+                    viz = [k for k in viz if pol[k]['fazenda'] == faz]
                     if len(viz) < 2:
                         continue  # vão cercado por um talhão só: é buraco interno
                     borda = vao.exterior.buffer(eps)
@@ -313,91 +405,103 @@ def auditar(feicoes, med, regras):
                     ordem = [viz[i] for i in np.argsort(-divisa) if divisa[i] >= med.tol(0.5)]
                     if len(ordem) < 2:
                         continue
-                    alvo = feicoes[ordem[0]]
-                    add('lacuna', alvo, f'Lacuna de {fmt_area(vm.area)} entre {", ".join(nome[feicoes[k]["id"]] for k in ordem[:4])}'
-                        f'{"…" if len(ordem) > 4 else ""}. Proposta: juntar a {nome[alvo["id"]]}.',
-                        destaque=vao, area=vm.area, outros=[feicoes[k] for k in ordem[1:]],
-                        op={'tipo': 'anexar', 'alvo': alvo['id'], 'area': wkb_hex(vao)})
+                    larg, comp = forma(vm)
+                    alvo = pol[ordem[0]]
+                    vizinhos = ', '.join(nome[pol[k]['id']] for k in ordem[:4]) + ('…' if len(ordem) > 4 else '')
+                    if est is not None and eh_estrada(larg, comp, est):
+                        add('corte_estrada', alvo, f'Faixa de {fmt_m(larg)} x {fmt_m(comp)} entre {vizinhos}.',
+                            'Vão entre talhões estreito e comprido: formato de estrada ou carreador.', 'suspeito',
+                            destaque=vao, area=vm.area, outros=[pol[k] for k in ordem[1:]],
+                            carac={'largura_m': round(larg, 1), 'comprimento_m': round(comp), 'onde': 'entre talhões'})
+                        continue
+                    fino = larg < (est['largura_min_m'] if est else 3)
+                    add('lacuna', alvo, f'Lacuna de {fmt_area(vm.area)} entre {vizinhos}. Proposta: juntar a {nome[alvo["id"]]}.',
+                        f'Vão de {fmt_area(vm.area)} totalmente cercado por {len(ordem)} talhões da fazenda; largura média {larg:.1f} m. '
+                        + ('Faixa muito fina: típico de desenho que não fechou.' if fino else 'Pode ser área sem plantio: confira.'),
+                        'confirmado' if fino else 'suspeito', destaque=vao, area=vm.area, outros=[pol[k] for k in ordem[1:]],
+                        op={'tipo': 'anexar', 'alvo': alvo['id'], 'area': wkb_hex(vao)},
+                        carac={'area_m2': round(vm.area, 2), 'largura_media_m': round(larg, 2), 'comprimento_m': round(comp),
+                               'vizinhos': len(ordem)})
 
+    # ---- D. estradas da camada de linhas atravessando talhões
+    if est is not None and lin and validos:
+        for f in lin:
+            g = f['geom']
+            if g is None or g.is_empty:
+                continue
+            for i in arvore.query(g, predicate='intersects'):
+                k = validos[i]
+                dentro = shapely.intersection(g, G[k])
+                comp = med.comprimento(dentro)
+                if comp < est['cruzamento_min_m']:
+                    continue
+                t = pol[k]
+                add('corte_estrada', t, f'{nome[f["id"]]} atravessa {nome[t["id"]]} por {fmt_m(comp)}.',
+                    f'A linha da camada de estradas passa {comp:.0f} m por dentro do talhão (mínimo para apontar: {est["cruzamento_min_m"]} m).',
+                    'suspeito', destaque=dentro, outros=[f],
+                    op={'tipo': 'recortar_faixa', 'alvo': t['id'], 'linha': wkb_hex(dentro), 'largura_m': est['largura_faixa_m']}
+                    if est['propor_recorte'] else None,
+                    carac={'comprimento_dentro_m': round(comp), 'largura_faixa_m': est['largura_faixa_m'], 'onde': 'camada de estradas'},
+                    extra_assin=f'|{round(comp)}')
+
+    # ---- F. linhas: pontas desconectadas e segmentos isolados
+    pd_, pi_ = ativa('estrada_desconectada'), ativa('segmento_isolado')
+    if lin and (pd_ is not None or pi_ is not None):
+        partes = [(f, j, ln) for f in lin for j, ln in enumerate(linhas(f['geom']))]
+        if len(partes) > 1:
+            arv = shapely.STRtree(np.array([ln for _, _, ln in partes], dtype=object))
+            tol = med.tol(max((pd_ or pi_)['tolerancia_m'], (pi_ or pd_)['tolerancia_m']))
+            alcance = med.tol(pd_['distancia_max_m']) if pd_ is not None else tol
+
+            def vizinhas(g, raio, idx):
+                return [(partes[x][2].distance(g), x) for x in arv.query(g.buffer(raio)) if x != idx]
+
+            for idx, (f, j, ln) in enumerate(partes):
+                if not no_alvo(f):
+                    continue
+                desconexoes = []
+                if pd_ is not None and not ln.is_closed:
+                    for ext, pt in ((0, Point(ln.coords[0])), (-1, Point(ln.coords[-1]))):
+                        perto = vizinhas(pt, alcance, idx)
+                        if not perto or min(perto)[0] <= tol:
+                            continue  # ponta ligada, ou estrada sem saída longe de tudo
+                        d, x = min(perto)
+                        if d <= alcance:
+                            desconexoes.append((ext, pt, d, x))
+                for ext, pt, d, x in desconexoes:
+                    dm = d / med.fator
+                    alvo_ln = partes[x][2]
+                    destino = alvo_ln.interpolate(alvo_ln.project(pt))
+                    outro = partes[x][0]
+                    add('estrada_desconectada', f, f'{nome[f["id"]]}: ponta a {fmt_m(dm)} de {nome[outro["id"]]} sem encostar.',
+                        f'A ponta para a {dm:.1f} m de outra linha (tolerância {pd_["tolerancia_m"]} m, procura até {pd_["distancia_max_m"]} m).',
+                        'suspeito', destaque=LineString([pt, destino]), outros=[outro] if outro['id'] != f['id'] else (),
+                        op={'tipo': 'conectar', 'alvo': f['id'], 'parte': j, 'extremidade': ext, 'ponto': [destino.x, destino.y]},
+                        carac={'distancia_m': round(dm, 2)}, extra_assin=f'|{j}|{ext}')
+                # isolada: nada encosta nem está perto o bastante para ser uma desconexão (circuitos fechados contam)
+                if pi_ is not None and not desconexoes and not any(d <= alcance for d, _ in vizinhas(ln, alcance, idx)):
+                    add('segmento_isolado', f, f'{nome[f["id"]]}: segmento de {fmt_m(med.comprimento(ln))} sem ligação com outra linha.',
+                        f'Nenhuma outra linha a menos de {alcance / med.fator:.1f} m deste segmento.', 'inconclusivo', destaque=ln,
+                        carac={'comprimento_m': round(med.comprimento(ln)), 'fechado': ln.is_closed}, extra_assin=f'|{j}')
+
+    # ---- atributos (só talhões)
     if ativa('atributo_ausente') is not None:
-        for f in feicoes:
+        for f in pol:
             faltam = [n for n, v in (('fazenda', f['fazenda']), ('talhão', f['talhao'])) if not v]
             if faltam:
+                g = f['geom']
                 add('atributo_ausente', f, f'{nome[f["id"]]}: sem {" e sem ".join(faltam)}.',
-                    destaque=_ponto_g(f['geom']))
+                    f'Os campos escolhidos para {" e ".join(faltam)} estão vazios ou não foram definidos para o lote.', 'confirmado',
+                    destaque=g.representative_point() if g is not None and not g.is_empty else None)
 
     if ativa('talhao_duplicado') is not None:
         grupos = {}
-        for f in feicoes:
+        for f in pol:
             if f['talhao']:
                 grupos.setdefault((f['fazenda'], f['aglomerado'], f['talhao']), []).append(f)
         for (faz, agl, tal), fs in grupos.items():
             if len(fs) > 1:
-                add('talhao_duplicado', fs[0], f'Talhão {tal} aparece {len(fs)} vezes na fazenda {faz or "?"}'
-                    f'{f" (aglomerado {agl})" if agl else ""}.', outros=fs[1:])
+                add('talhao_duplicado', fs[0], f'Talhão {tal} aparece {len(fs)} vezes na fazenda {faz or "?"}{f" (aglomerado {agl})" if agl else ""}.',
+                    f'{len(fs)} registros com a mesma combinação fazenda/aglomerado/talhão. Pode ser talhão dividido de propósito.',
+                    'suspeito', outros=fs[1:], carac={'registros': len(fs)})
     return out
-
-
-def rotulo(f):
-    return f"Talhão {f['talhao'] or '?'}" + (f" ({f['aglomerado']})" if f.get('aglomerado') else '')
-
-
-def _ponto(g):
-    p = g.representative_point()
-    return [p.x, p.y]
-
-
-def _ponto_g(g):
-    return g.representative_point() if g is not None and not g.is_empty else None
-
-
-# ---------- correção ----------
-def aplicar_ops(geoms, ops, med):
-    """geoms: {id: geometria}. Aplica as ops em ORDEM_OPS e devolve {id: nova geometria ou None}."""
-    g = dict(geoms)
-    for op in sorted(ops, key=lambda o: ORDEM_OPS.index(o['tipo'])):
-        alvo = op['alvo']
-        atual = g.get(alvo)
-        if op['tipo'] == 'remover_feicao':
-            g[alvo] = None
-            continue
-        if atual is None:
-            continue
-        t = op['tipo']
-        if t == 'tornar_valida':
-            novo = limpar(atual)
-        elif t == 'remover_repetidos':
-            novo = limpar(shapely.remove_repeated_points(atual, op['tol']))
-        elif t == 'preencher_buraco':
-            pt = Point(op['ponto'])
-            novo = juntar([Polygon(p.exterior, [r for r in p.interiors if not Polygon(r).contains(pt)])
-                           for p in poligonos(atual)])
-        elif t == 'remover_parte':
-            pt = Point(op['ponto'])
-            sobra = [p for p in poligonos(atual) if not p.contains(pt)]
-            novo = juntar(sobra) if sobra else atual
-        elif t == 'simplificar':
-            novo = limpar(med.de_m(shapely.simplify(med.m(atual), op['tol_m'], preserve_topology=True)))
-        elif t == 'subtrair':
-            novo = limpar(shapely.difference(atual, de_hex(op['area']), grid_size=med.grade))
-        elif t == 'anexar':
-            novo = limpar(shapely.union(atual, de_hex(op['area']), grid_size=med.grade))
-        else:
-            raise ValueError(f'operação desconhecida: {t}')
-        # recortes deixam lascas de área quase zero: não viram "parte solta" na próxima auditoria
-        if novo is not None:
-            novo = juntar([p for p in poligonos(novo) if med.area(p) >= 0.01]) or novo
-        g[alvo] = novo
-    return g
-
-
-DESCRICAO_OP = {
-    'remover_feicao': 'Registro removido',
-    'tornar_valida': 'Geometria refeita válida',
-    'remover_repetidos': 'Vértices repetidos removidos',
-    'preencher_buraco': 'Buraco preenchido',
-    'remover_parte': 'Parte solta removida',
-    'simplificar': 'Contorno simplificado',
-    'subtrair': 'Área sobreposta recortada',
-    'anexar': 'Lacuna incorporada',
-}

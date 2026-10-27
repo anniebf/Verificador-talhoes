@@ -11,10 +11,20 @@ export default function Lotes() {
   const [nome, setNome] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [erro, setErro] = useState('')
+  const [regras, setRegras] = useState([])
+  const [sel, setSel] = useState(new Set())
   const nav = useNavigate()
 
   const carregar = () => api.get('/api/lotes').then(setLotes).catch((e) => setErro(e.message))
-  useEffect(() => { carregar() }, [])
+  useEffect(() => {
+    carregar()
+    // verificações disponíveis: as que o admin deixou ativas vêm marcadas
+    api.get('/api/admin/regras').then((d) => {
+      setRegras(d.regras)
+      setSel(new Set(d.regras.filter((r) => r.ativo).map((r) => r.chave)))
+    }).catch(() => {})
+  }, [])
+  const alternar = (k) => { const n = new Set(sel); n.has(k) ? n.delete(k) : n.add(k); setSel(n) }
 
   const importar = async () => {
     setErro('')
@@ -22,6 +32,7 @@ export default function Lotes() {
     const fd = new FormData()
     arquivos.forEach((f) => fd.append('arquivos', f))
     fd.append('nome', nome)
+    fd.append('verificacoes', [...sel].join(','))
     try {
       const lote = await api.post('/api/lotes', fd)
       nav(`/lotes/${lote.id}`)
@@ -43,11 +54,23 @@ export default function Lotes() {
         <h1>Nova importação</h1>
         <p className="sub">Envie os shapefiles de fazendas, aglomerados e talhões. A auditoria roda logo depois da leitura.</p>
         <SoltarArquivos arquivos={arquivos} setArquivos={setArquivos} />
+        <details className="verificacoes">
+          <summary>Configuração das verificações <small>({sel.size} de {regras.length} regras)</small></summary>
+          <p className="sub">A auditoria só lê os dados: nada é alterado nesta etapa. Regras desligadas pelo administrador aparecem desabilitadas.</p>
+          <div className="grade-verificacoes">
+            {regras.map((r) => (
+              <label key={r.chave} className={`linha-check ${r.ativo ? '' : 'desligada'}`} title={r.descricao}>
+                <input type="checkbox" checked={sel.has(r.chave)} disabled={!r.ativo} onChange={() => alternar(r.chave)} />
+                <span><b>{r.grupo}</b> · {r.nome}</span>
+              </label>
+            ))}
+          </div>
+        </details>
         <div className="linha-form">
           <label className="cresce">Nome do lote (opcional)
             <input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="ex.: Safra 2026/27 – Regional Norte" />
           </label>
-          <button className="btn primario" disabled={!arquivos.length || enviando} onClick={importar}>
+          <button className="btn primario" disabled={!arquivos.length || enviando || !sel.size} onClick={importar}>
             {enviando ? 'Importando e auditando…' : 'Importar e auditar'}
           </button>
         </div>

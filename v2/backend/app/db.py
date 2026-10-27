@@ -66,6 +66,7 @@ class Lote(Base):
     crs_nome: Mapped[str] = mapped_column(String(200), default='')
     crs_metrico: Mapped[str] = mapped_column(String(40), default='')  # EPSG usado para medir em metros
     campos: Mapped[dict] = mapped_column(JSON, default=dict)      # mapeamento fazenda/aglomerado/talhão
+    verificacoes: Mapped[list] = mapped_column(JSON, default=list)  # regras escolhidas para o lote ([] = todas as ativas)
     colunas: Mapped[list] = mapped_column(JSON, default=list)     # colunas da tabela, na ordem original
     versao_atual: Mapped[int] = mapped_column(Integer, default=1)
     criado_por: Mapped[str] = mapped_column(String(80), default='')
@@ -80,6 +81,9 @@ class Camada(Base):
     arquivo: Mapped[str] = mapped_column(String(300), default='')
     n_feicoes: Mapped[int] = mapped_column(Integer, default=0)
     crs_original: Mapped[str] = mapped_column(String(200), default='')
+    geometria: Mapped[str] = mapped_column(String(20), default='poligono')  # poligono | linha
+    colunas: Mapped[list] = mapped_column(JSON, default=list)
+    avisos: Mapped[list] = mapped_column(JSON, default=list)               # avisos da validação de entrada
     criado_por: Mapped[str] = mapped_column(String(80), default='')
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
 
@@ -93,6 +97,8 @@ class Feicao(Base):
     fazenda_nome: Mapped[str] = mapped_column(String(300), default='')
     aglomerado: Mapped[str] = mapped_column(String(120), default='')
     talhao: Mapped[str] = mapped_column(String(120), default='')
+    linha: Mapped[bool] = mapped_column(Boolean, default=False)          # feição de estrada/linha
+    indice_origem: Mapped[int] = mapped_column(Integer, default=0)       # posição (FID) na camada de origem
     atributos: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -130,10 +136,50 @@ class Inconsistencia(Base):
     destaque: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # WKB do trecho com erro
     op: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # correção proposta (None = só manual)
     assinatura: Mapped[str] = mapped_column(String(200), default='')
-    # pendente -> aceita | rejeitada -> aplicada | mantida
-    status: Mapped[str] = mapped_column(String(20), default='pendente', index=True)
+    classificacao: Mapped[str] = mapped_column(String(15), default='confirmado')  # confirmado | suspeito | inconclusivo
+    motivo: Mapped[str] = mapped_column(Text, default='')          # por que a regra apontou
+    limitacoes: Mapped[str] = mapped_column(Text, default='')      # riscos da correção proposta
+    caracteristicas: Mapped[dict] = mapped_column(JSON, default=dict)
+    execucao_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # auditoria que detectou
+    # ver estados.py: identificada, em_revisao, aprovada, rejeitada, pendente, corrigida, falha, nao_corrigivel
+    status: Mapped[str] = mapped_column(String(20), default='identificada', index=True)
     decidido_por: Mapped[str] = mapped_column(String(80), default='')
     decidido_em: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    validacao: Mapped[list] = mapped_column(JSON, default=list)    # verificações feitas após a correção
+    correcao_execucao_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Execucao(Base):
+    """Uma rodada de auditoria ou de correção, com identificador próprio e o resumo do que aconteceu."""
+    __tablename__ = 'execucoes'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lote_id: Mapped[int] = mapped_column(Integer, index=True)
+    tipo: Mapped[str] = mapped_column(String(20))                  # auditoria | correcao
+    status: Mapped[str] = mapped_column(String(20), default='executando')  # executando | concluida | erro
+    usuario: Mapped[str] = mapped_column(String(80), default='')
+    inicio: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
+    fim: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    versao_entrada: Mapped[int] = mapped_column(Integer, default=1)
+    versao_saida: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entrada: Mapped[str] = mapped_column(Text, default='')         # arquivos / camadas analisadas
+    saida: Mapped[str] = mapped_column(Text, default='')           # versão e arquivo gerados
+    regras: Mapped[dict] = mapped_column(JSON, default=dict)       # regras executadas, com os parâmetros
+    fazendas: Mapped[list] = mapped_column(JSON, default=list)
+    resumo: Mapped[dict] = mapped_column(JSON, default=dict)
+    erro: Mapped[str] = mapped_column(Text, default='')
+
+
+class Historico(Base):
+    """Cada mudança de estado de uma ocorrência (sem chave estrangeira: sobrevive à reauditoria)."""
+    __tablename__ = 'historico_ocorrencias'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    inconsistencia_id: Mapped[int] = mapped_column(Integer, index=True)
+    lote_id: Mapped[int] = mapped_column(Integer, index=True)
+    execucao_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    estado: Mapped[str] = mapped_column(String(20))
+    usuario: Mapped[str] = mapped_column(String(80), default='')
+    data_hora: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
+    nota: Mapped[str] = mapped_column(Text, default='')
 
 
 class Log(Base):

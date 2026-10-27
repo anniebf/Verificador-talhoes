@@ -7,6 +7,19 @@ import Mapa, { ESTILOS, sincronizar } from '../components/Mapa.jsx'
 import { Aviso, Classe, Dica, Estado, Etapas, nomeFazenda, SEVERIDADE, STATUS } from '../components/Comuns.jsx'
 
 const FC = (features) => ({ type: 'FeatureCollection', features })
+
+// Vértices dos polígonos como pontos (excesso de vértices). O total conta como o servidor (o ponto que fecha
+// cada anel entra na conta), mas o ponto repetido do fechamento não é desenhado duas vezes.
+function vertices(fc) {
+  const pts = []
+  let total = 0
+  for (const f of fc?.features || []) {
+    const g = f.geometry
+    const poligonos = g?.type === 'Polygon' ? [g.coordinates] : g?.type === 'MultiPolygon' ? g.coordinates : []
+    for (const anel of poligonos.flat()) { total += anel.length; pts.push(...anel.slice(0, -1)) }
+  }
+  return { total, dados: FC([{ type: 'Feature', geometry: { type: 'MultiPoint', coordinates: pts }, properties: {} }]) }
+}
 const SEM_DECISAO = ['identificada', 'em_revisao']
 const DECIDIVEL = (i) => i.status !== 'corrigida'
 const ROTULO_CARAC = {
@@ -129,16 +142,21 @@ export default function Revisao() {
   const destaque = det?.destaque ? FC([{ type: 'Feature', geometry: det.destaque, properties: {} }]) : null
   const estiloFeicao = (base) => (f) => (f.properties.linha ? { ...ESTILOS.estrada, color: base.color } : base)
   const dicaT = (f) => (f.properties.linha ? `Linha #${f.properties.indice + 1}` : `Talhão ${f.properties.talhao || '?'}${f.properties.aglomerado ? ` · ${f.properties.aglomerado}` : ''}`)
+  // excesso de vértices: cada vértice vira um ponto no erro (esquerda) e na solução (direita)
+  const vert = useMemo(() => (det?.tipo === 'excesso_vertices'
+    ? { antes: vertices(det.original), depois: det.manual ? null : vertices(det.proposta) } : null), [det])
   const [esquerda, direita] = useMemo(() => {
     if (!det) return [[], []]
     const viz = { dados: det.vizinhos, estilo: (f) => (f.properties.linha ? ESTILOS.estrada : ESTILOS.vizinho), dica: (f) => `${dicaT(f)} (vizinho)` }
     return [
       [viz, { dados: det.original, estilo: estiloFeicao(ESTILOS.original), dica: dicaT },
-        destaque && { dados: destaque, estilo: ESTILOS.erro, ponto: { fillColor: '#ff1f3d' }, dica: () => det.nome }].filter(Boolean),
+        destaque && { dados: destaque, estilo: ESTILOS.erro, ponto: { fillColor: '#ff1f3d' }, dica: () => det.nome },
+        vert && { dados: vert.antes.dados, ponto: { radius: 2.5, weight: 0.5, color: '#000', fillColor: ESTILOS.original.color } }].filter(Boolean),
       [viz, { dados: det.proposta, estilo: estiloFeicao(ESTILOS.proposta), dica: dicaT },
-        destaque && { dados: destaque, estilo: { color: '#fff', weight: 1.5, dashArray: '4 4', fillOpacity: 0 }, ponto: { fillColor: '#3ddc84', radius: 5 } }].filter(Boolean),
+        destaque && { dados: destaque, estilo: { color: '#fff', weight: 1.5, dashArray: '4 4', fillOpacity: 0 }, ponto: { fillColor: '#3ddc84', radius: 5 } },
+        vert?.depois && { dados: vert.depois.dados, ponto: { radius: 2.5, weight: 0.5, color: '#000', fillColor: ESTILOS.proposta.color } }].filter(Boolean),
     ]
-  }, [det])
+  }, [det, vert])
   const enquadrar = det ? [det.original, destaque].filter(Boolean) : null
 
   const aprovadas = cont.aprovada || 0
@@ -258,10 +276,12 @@ export default function Revisao() {
             <Mapa aoCriar={aoCriarMapa} camadas={esquerda} enquadrar={enquadrar} chaveEnquadrar={det?.id}
               rotulo="Geometria original" className="lado-original"
               legenda={[{ texto: 'Feição envolvida', cor: ESTILOS.original.color }, { texto: 'Trecho apontado', cor: ESTILOS.erro.color, fundo: ESTILOS.erro.fillColor },
-                { texto: 'Vizinhos', cor: ESTILOS.vizinho.color }]} />
+                { texto: 'Vizinhos', cor: ESTILOS.vizinho.color },
+                vert && { texto: `Vértices: ${vert.antes.total.toLocaleString('pt-BR')}`, cor: '#000', fundo: ESTILOS.original.color }].filter(Boolean)} />
             <Mapa aoCriar={aoCriarMapa} camadas={direita} rotulo={det && det.manual ? 'Sem correção automática' : 'Prévia da correção (cópia)'}
               className="lado-proposta"
-              legenda={[{ texto: 'Resultado esperado', cor: ESTILOS.proposta.color }, { texto: 'Onde estava o problema', cor: '#fff' }]} />
+              legenda={[{ texto: 'Resultado esperado', cor: ESTILOS.proposta.color }, { texto: 'Onde estava o problema', cor: '#fff' },
+                vert?.depois && { texto: `Vértices: ${vert.depois.total.toLocaleString('pt-BR')}`, cor: '#000', fundo: ESTILOS.proposta.color }].filter(Boolean)} />
             {atualId && !det && <div className="mapa-carregando">Carregando…</div>}
           </div>
 

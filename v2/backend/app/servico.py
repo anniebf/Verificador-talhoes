@@ -66,14 +66,19 @@ class ParaMapa:
             return g
         return shapely.transform(g, lambda c: np.column_stack(self.t.transform(c[:, 0], c[:, 1])))
 
-    def geojson(self, g, casas=7):
+    def geojson(self, g, casas=7, simplificar=0.0):
+        """`simplificar` (unidades do lote) deixa o desenho mais leve: só para exibir, nunca para medir."""
         if g is None or g.is_empty:
             return None
+        if simplificar:
+            g = shapely.simplify(g, simplificar, preserve_topology=False) or g
+            if g.is_empty:
+                return None
         return json.loads(shapely.to_geojson(shapely.set_precision(self(g), 10 ** -casas, mode='pointwise')))
 
 
-def feicao_json(f, g, mapa, extra=None):
-    return {'type': 'Feature', 'geometry': mapa.geojson(g),
+def feicao_json(f, g, mapa, extra=None, leve=0.0):
+    return {'type': 'Feature', 'geometry': mapa.geojson(g, casas=6, simplificar=leve) if leve else mapa.geojson(g),
             'properties': {'id': f.id, 'fazenda': f.fazenda, 'fazendaNome': f.fazenda_nome, 'aglomerado': f.aglomerado,
                            'talhao': f.talhao, 'linha': f.linha, 'indice': f.indice_origem, **(extra or {})}}
 
@@ -304,6 +309,8 @@ def resumo_lote(s, lote):
         d['pendentes'] += i.status in ('identificada', 'em_revisao', 'pendente')
     fazendas = []
     for d in sorted(faz.values(), key=lambda d: (len(d['codigo']), d['codigo'])):
+        # aglomerado principal: o que mais aparece nos talhões da fazenda (a tela agrupa as fazendas por ele)
+        d['aglomerado'] = d['aglomerados'].most_common(1)[0][0] if d['aglomerados'] else ''
         d['aglomerados'] = [{'nome': k, 'talhoes': v} for k, v in sorted(d['aglomerados'].items())]
         d['nErros'] = sum(d['erros'].values())
         d['erros'] = dict(d['erros'])
@@ -328,6 +335,27 @@ def resumo_lote(s, lote):
         'tipos': [{'chave': k, 'nome': v['nome'], 'severidade': v['severidade'], 'grupo': v['grupo']} for k, v in PADRAO.items()],
         'estados': estados.ESTADOS,
     }
+
+
+def feicao_detalhe(s, lote, fid):
+    """Ficha de um talhão/linha clicado no mapa: identificação, medidas e todos os atributos originais."""
+    f = s.get(Feicao, fid)
+    if f is None or f.lote_id != lote.id:
+        raise ErroArquivo('Feição não encontrada.')
+    g = geometrias(s, lote.id, lote.versao_atual, ids=[fid]).get(fid)
+    med = medidor(lote)
+    cam = s.get(Camada, f.camada_id)
+    abertas = [i for i in s.scalars(select(Inconsistencia).where(Inconsistencia.lote_id == lote.id,
+                                                              Inconsistencia.status.in_(estados.ABERTOS)))
+               if fid in i.feicoes]
+    return {'id': f.id, 'fazenda': f.fazenda, 'fazendaNome': f.fazenda_nome, 'aglomerado': f.aglomerado, 'talhao': f.talhao,
+            'linha': f.linha, 'camada': cam.nome if cam else '', 'registro': f.indice_origem + 1,
+            'areaHa': round(med.area(g) / 1e4, 4) if g is not None and not f.linha else None,
+            'comprimentoM': round(med.comprimento(g), 1) if g is not None and f.linha else None,
+            'vertices': int(shapely.get_num_coordinates(g)) if g is not None else 0,
+            'partes': int(shapely.get_num_geometries(g)) if g is not None else 0,
+            'atributos': f.atributos,
+            'ocorrencias': [{'id': i.id, 'nome': PADRAO[i.tipo]['nome'], 'status': i.status} for i in abertas]}
 
 
 def lote_json(l):
@@ -360,7 +388,8 @@ def mapa_fazenda(s, lote, fazenda, versao=None):
         for fid in i.feicoes:
             erros[fid] += 1
     mapa, med = ParaMapa(lote), medidor(lote)
-    tol = med.tol(2.0) if fazenda is None else 0
+    # desenho para o mapa: 0,5 m numa fazenda e 5 m no lote todo (invisível na tela, ~5x menos dados)
+    tol = med.tol(5.0) if fazenda is None else med.tol(0.5)
     talhoes = [fid for fid in gs if fid in fs and not fs[fid].linha]
     caixa = None
     if fazenda is not None and talhoes:
@@ -373,10 +402,9 @@ def mapa_fazenda(s, lote, fazenda, versao=None):
             continue
         if f.linha and fazenda is not None and f.fazenda != fazenda and (caixa is None or not g.intersects(caixa)):
             continue
-        gd = shapely.simplify(g, tol, preserve_topology=False) if tol else g
         extra = {'erros': erros[fid], 'vertices': int(shapely.get_num_coordinates(g))}
         extra.update({'comprimentoM': round(med.comprimento(g))} if f.linha else {'areaHa': round(med.area(g) / 1e4, 4)})
-        feats.append(feicao_json(f, gd, mapa, extra))
+        feats.append(feicao_json(f, g, mapa, extra, leve=tol))
     return {'type': 'FeatureCollection', 'features': feats}
 
 
@@ -385,7 +413,7 @@ def nomes_feicoes(s, ids):
     return {f.id: f for f in s.scalars(select(Feicao).where(Feicao.id.in_(list(ids))))} if ids else {}
 
 
-def inconsistencia_json(i, feicoes, mapa):
+def inconsistencia_json(i, feicoes, mapa, leve=0.0):
     def ident(fid):
         f = feicoes.get(fid)
         if f is None:
@@ -396,7 +424,8 @@ def inconsistencia_json(i, feicoes, mapa):
             'estado': estados.ESTADOS.get(i.status, i.status), 'classificacao': i.classificacao, 'temCorrecao': i.op is not None,
             'versao': i.versao, 'execucaoId': i.execucao_id, 'decididoPor': i.decidido_por, 'decididoEm': i.decidido_em,
             'feicoes': [ident(fid) for fid in i.feicoes],
-            'destaque': mapa.geojson(shapely.from_wkb(i.destaque)) if i.destaque else None}
+            'destaque': (mapa.geojson(shapely.from_wkb(i.destaque), casas=6, simplificar=leve) if leve
+                         else mapa.geojson(shapely.from_wkb(i.destaque))) if i.destaque else None}
 
 
 def listar_inconsistencias(s, lote, fazenda=None, tipo=None, status=None, talhao=None, auto=None, ids=None):
@@ -421,7 +450,8 @@ def listar_inconsistencias(s, lote, fazenda=None, tipo=None, status=None, talhao
     ordem = {k: n for n, k in enumerate(PADRAO)}
     incs.sort(key=lambda i: (ordem[i.tipo], -i.area_m2, i.id))
     mapa = ParaMapa(lote)
-    return [inconsistencia_json(i, fs, mapa) for i in incs]
+    leve = medidor(lote).tol(0.5)  # só a lista/mapa; o detalhe da revisão manda o desenho exato
+    return [inconsistencia_json(i, fs, mapa, leve) for i in incs]
 
 
 def detalhe_inconsistencia(s, lote, inc, usuario=None):

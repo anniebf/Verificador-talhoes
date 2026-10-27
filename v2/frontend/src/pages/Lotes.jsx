@@ -52,10 +52,14 @@ export default function Lotes() {
     <div className="pagina">
       <section className="cartao importar">
         <h1>Nova importação</h1>
-        <p className="sub">Envie os shapefiles de fazendas, aglomerados e talhões. A auditoria roda logo depois da leitura.</p>
+        <ol className="passos">
+          <li><b>Envie a base</b><span>o .rar ou .zip do shapefile de talhões</span></li>
+          <li><b>Veja os problemas</b><span>por fazenda, no mapa de satélite</span></li>
+          <li><b>Revise e corrija</b><span>nada muda sem a sua aprovação</span></li>
+        </ol>
         <SoltarArquivos arquivos={arquivos} setArquivos={setArquivos} />
         <details className="verificacoes">
-          <summary>Configuração das verificações <small>({sel.size} de {regras.length} regras)</small></summary>
+          <summary>Opções avançadas <small>· {sel.size} de {regras.length} verificações ligadas</small></summary>
           <p className="sub">A auditoria só lê os dados: nada é alterado nesta etapa. Regras desligadas pelo administrador aparecem desabilitadas.</p>
           <div className="grade-verificacoes">
             {regras.map((r) => (

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, area, data, num } from '../api.js'
 import Mapa, { ESTILOS, sincronizar } from '../components/Mapa.jsx'
-import { Aviso, Classe, Estado, Etapas, SEVERIDADE, STATUS } from '../components/Comuns.jsx'
+import { Aviso, Classe, Dica, Estado, Etapas, nomeFazenda, SEVERIDADE, STATUS } from '../components/Comuns.jsx'
 
 const FC = (features) => ({ type: 'FeatureCollection', features })
 const SEM_DECISAO = ['identificada', 'em_revisao']
@@ -28,7 +28,9 @@ export default function Revisao() {
   const unico = sp.get('inc') ? Number(sp.get('inc')) : null
   const [filtro, setFiltro] = useState({ tipo: sp.get('tipo') || '', status: 'abertas', talhao: '', auto: '' })
   const [lista, setLista] = useState(null)
-  const [tipos, setTipos] = useState([])
+  const [lote, setLote] = useState(null)
+  const [verFiltros, setVerFiltros] = useState(false)
+  const [aba, setAba] = useState('resumo')
   const [atualId, setAtualId] = useState(null)
   const [det, setDet] = useState(null)
   const [marcadas, setMarcadas] = useState(new Set())
@@ -37,7 +39,16 @@ export default function Revisao() {
   const [salvando, setSalvando] = useState(false)
   const mapas = useRef([])
 
-  useEffect(() => { api.get(`/api/lotes/${id}`).then((l) => setTipos(l.tipos)).catch(() => {}) }, [id])
+  useEffect(() => { api.get(`/api/lotes/${id}`).then(setLote).catch((e) => setErro(e.message)) }, [id])
+  const tipos = lote?.tipos || []
+  // a revisão é sempre de uma fazenda: sem fazenda escolhida, abre a que tem mais ocorrências
+  useEffect(() => {
+    if (!lote || unico || fazenda !== '*') return
+    const f = [...lote.fazendas].filter((x) => x.nErros).sort((a, b) => (!a.codigo) - (!b.codigo) || b.nErros - a.nErros)[0]
+    if (f) setSp({ fazenda: f.codigo }, { replace: true })
+  }, [lote, fazenda, unico])
+  const fazendasComErro = (lote?.fazendas || []).filter((f) => f.nErros || f.codigo === fazenda)
+  const grupos = fazendasComErro.reduce((g, f) => ({ ...g, [f.aglomerado || 'Sem aglomerado']: [...(g[f.aglomerado || 'Sem aglomerado'] || []), f] }), {})
 
   const carregar = useCallback(() => {
     const p = unico ? { ids: String(unico), status: '' } : {
@@ -57,6 +68,7 @@ export default function Revisao() {
   useEffect(() => {
     if (!atualId) { setDet(null); return }
     setDet(null)
+    setAba('resumo')
     api.get(`/api/lotes/${id}/inconsistencias/${atualId}`).then((d) => {
       setDet(d)
       // abrir a ocorrência a coloca "em revisão"
@@ -139,14 +151,30 @@ export default function Revisao() {
   return (
     <div className="tela-lote">
       <div className="barra-lote">
-        <div>
-          <Link to={voltar} className="btn-link">← Voltar à auditoria</Link>
-          <h1>Revisão {unico ? `da ocorrência #${unico}` : fazenda === '*' ? '— todas as fazendas' : `— fazenda ${fazenda || 'sem código / estradas'}`}</h1>
+        <div className="barra-titulo">
+          <Link to={voltar} className="btn-link">← Voltar ao mapa do lote</Link>
+          <h1>Revisão {unico && `da ocorrência #${unico}`}</h1>
         </div>
         <Etapas atual={2} loteId={id} fazenda={fazenda} />
+        {!unico && lote && (
+          <label className="seletor-fazenda">Fazenda
+            <select value={fazenda} onChange={(e) => setSp({ fazenda: e.target.value })}>
+              {fazenda === '*' && <option value="*">Escolha…</option>}
+              {Object.entries(grupos).sort(([a], [b]) => a.localeCompare(b, 'pt-BR')).map(([g, fs]) => (
+                <optgroup key={g} label={g}>
+                  {fs.map((f) => <option key={f.codigo} value={f.codigo}>{nomeFazenda(f)} ({f.nErros})</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
       <Aviso aoFechar={() => setErro('')}>{erro}</Aviso>
       <Aviso tipo="alerta" aoFechar={() => setInfo('')}>{info}</Aviso>
+      <Dica id="revisao">
+        Compare a <b>geometria original</b> (esquerda) com a <b>prévia da correção</b> (direita) e decida: <b>A</b> aprovar,
+        <b> R</b> rejeitar, <b>P</b> deixar pendente. Aprovar ainda não altera nada: a correção só é aplicada na etapa 3.
+      </Dica>
 
       <div className="revisao">
         <aside className="painel">
@@ -155,7 +183,12 @@ export default function Revisao() {
               <p className="sub">Revisando uma ocorrência. <button className="btn-link" onClick={() => { sp.delete('inc'); setSp(sp) }}>Ver todas {fazenda === '*' ? 'do lote' : 'da fazenda'}</button></p>
             ) : (
               <div className="filtros-revisao">
-                <input placeholder="Filtrar por talhão…" value={filtro.talhao} onChange={mudaFiltro('talhao')} />
+                <div className="linha-busca">
+                  <input placeholder="Buscar talhão…" value={filtro.talhao} onChange={mudaFiltro('talhao')} />
+                  <button className={`btn pequeno ${verFiltros || filtro.tipo || filtro.status !== 'abertas' || filtro.auto ? 'ativo' : ''}`}
+                    onClick={() => setVerFiltros(!verFiltros)}>Filtros {verFiltros ? '▴' : '▾'}</button>
+                </div>
+                {verFiltros && <>
                 <select value={filtro.tipo} onChange={mudaFiltro('tipo')}>
                   <option value="">Todas as categorias</option>
                   {tipos.map((t) => <option key={t.chave} value={t.chave}>{t.grupo} · {t.nome}</option>)}
@@ -169,6 +202,7 @@ export default function Revisao() {
                   <option value="sim">Só com correção automática</option>
                   <option value="nao">Só manuais</option>
                 </select>
+                </>}
               </div>
             )}
             <p className="contagem-estados">
@@ -195,16 +229,16 @@ export default function Revisao() {
             </section>
           )}
 
-          <section className="cresce">
-            <ul className="lista-incs">
+          <section className="cresce sem-pad">
+            <ul className="lista-incs rolagem">
               {lista.map((i) => (
                 <li key={i.id} className={i.id === atualId ? 'ativo' : ''} onClick={() => setAtualId(i.id)}>
                   <div className="inc-topo">
                     {!unico && <input type="checkbox" checked={marcadas.has(i.id)} onClick={(e) => e.stopPropagation()} onChange={() => marcar(i.id)} />}
-                    <span className={`sev sev-${i.severidade}`} /><b>#{i.id} {i.nome}</b><Classe c={i.classificacao} />
+                    <span className={`sev sev-${i.severidade}`} /><b>{i.nome}</b>
                   </div>
                   <div className="inc-desc">{i.descricao}</div>
-                  <div className="inc-rodape"><Estado s={i.status} /><small>{i.temCorrecao ? 'correção automática' : 'manual'}</small></div>
+                  <div className="inc-rodape"><Estado s={i.status} />{!i.temCorrecao && <small>manual</small>}</div>
                 </li>
               ))}
               {!lista.length && <li className="vazio">Nenhuma ocorrência neste filtro.</li>}
@@ -240,7 +274,12 @@ export default function Revisao() {
                   <span className="sub">Severidade {SEVERIDADE[det.severidade]} · {pos + 1} de {lista.length}</span>
                 </div>
                 <p><b>{det.descricao}</b></p>
-                <div className="detalhe-grade">
+                <div className="abas">
+                  {[['resumo', 'Resumo'], ['feicoes', `Feições (${det.envolvidas.length})`], ['historico', `Histórico (${det.historico?.length || 0})`]].map(([k, r]) => (
+                    <button key={k} className={aba === k ? 'ativo' : ''} onClick={() => setAba(k)}>{r}</button>
+                  ))}
+                </div>
+                {aba === 'resumo' && <div className="detalhe-grade">
                   <div>
                     <h4>Por que foi apontada</h4>
                     <p>{det.motivo}</p>
@@ -260,9 +299,8 @@ export default function Revisao() {
                       ))}
                     </dl>
                   </div>
-                </div>
-                <h4>Feições envolvidas</h4>
-                <table className="tabela compacta">
+                </div>}
+                {aba === 'feicoes' && <table className="tabela compacta">
                   <thead><tr><th>Feição</th><th>Camada / registro</th><th>Fazenda</th><th>Medida antes → depois</th><th>Vértices</th><th>Partes</th><th>Válida</th></tr></thead>
                   <tbody>
                     {det.envolvidas.map((e) => (
@@ -279,11 +317,9 @@ export default function Revisao() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
-                {det.historico?.length > 0 && (
-                  <details className="historico"><summary>Histórico ({det.historico.length})</summary>
-                    <ul>{det.historico.map((h, k) => <li key={k}>{data(h.dataHora)} · <b>{h.estado}</b> · {h.usuario}{h.execucaoId ? ` · execução #${h.execucaoId}` : ''}{h.nota ? ` — ${h.nota}` : ''}</li>)}</ul>
-                  </details>
+                </table>}
+                {aba === 'historico' && (
+                  <ul className="historico">{(det.historico || []).map((h, k) => <li key={k}>{data(h.dataHora)} · <b>{h.estado}</b> · {h.usuario}{h.execucaoId ? ` · execução #${h.execucaoId}` : ''}{h.nota ? ` — ${h.nota}` : ''}</li>)}</ul>
                 )}
               </div>
               <div className="decisao-botoes">

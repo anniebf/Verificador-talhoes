@@ -6,6 +6,7 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -27,6 +28,8 @@ async def iniciar(_):
 
 
 app = FastAPI(title='Verificador de Talhões', version='2.0.0', lifespan=iniciar)
+# GeoJSON comprime ~5x: o mapa de uma fazenda grande cai de ~900 KB para ~180 KB na rede
+app.add_middleware(GZipMiddleware, minimum_size=2000)
 
 
 @app.exception_handler(ErroArquivo)
@@ -305,6 +308,12 @@ def mapa(lote_id: int, fazenda: str | None = None, versao: int | None = None, _:
 
 class Reauditoria(BaseModel):
     verificacoes: list[str] | None = None
+
+
+@app.get('/api/lotes/{lote_id}/feicoes/{fid}')
+def feicao(lote_id: int, fid: int, _: Usuario = Depends(auth.usuario_atual)):
+    with Sessao() as s:
+        return servico.feicao_detalhe(s, pegar_lote(s, lote_id), fid)
 
 
 @app.post('/api/lotes/{lote_id}/auditar')

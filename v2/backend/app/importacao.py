@@ -1,10 +1,12 @@
 """Leitura dos arquivos enviados: .zip, .rar ou os arquivos soltos do shapefile (.shp/.dbf/.shx/.prj/.cpg)."""
 import collections
+import re
 import math
 import shutil
 import subprocess
 import tempfile
 import unicodedata
+import warnings
 import zipfile
 from datetime import date, datetime
 from pathlib import Path
@@ -132,6 +134,16 @@ def ler_shapefile(shp: Path):
         avisos.append(f'{shp.name}: sem .cpg; textos lidos como Latin-1.')
     try:
         gdf = pyogrio.read_dataframe(shp, encoding=None if cpg else 'latin1')
+        # .cpg que diz UTF-8 com textos gravados em Latin-1 (comum em bases exportadas do ArcGIS/Excel):
+        # "1ª SAFRA" chega como "1� SAFRA". Relê como Windows-1252 e fica com a leitura que estragar menos.
+        if cpg is not None and _estragados(gdf):
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore')
+                outra = pyogrio.read_dataframe(shp, encoding='cp1252')
+            if _estragados(outra) < _estragados(gdf):
+                gdf = outra
+                avisos.append(f'{shp.name}: o .cpg diz {cpg.read_text(errors="replace").strip()}, mas os textos estão em Latin-1; '
+                              'lidos como Latin-1 para os acentos saírem certos.')
     except Exception as e:  # noqa: BLE001
         raise ErroArquivo(f'Não consegui ler {shp.name}: o arquivo parece corrompido ou incompleto ({e}).')
     if gdf.geometry.name != 'geometry':
@@ -153,19 +165,36 @@ def ler_shapefile(shp: Path):
     return gdf, (familias.pop() if familias else 'poligono'), avisos
 
 
+def _estragados(gdf):
+    """Quantos textos têm o caractere de substituição (byte que não era do encoding usado)."""
+    return sum(int(gdf[c].astype(str).str.contains('�', regex=False).sum())
+               for c in gdf.columns if c != 'geometry' and gdf[c].dtype.kind in 'OUT')
+
+
 def simples(texto):
     sem = ''.join(c for c in unicodedata.normalize('NFKD', str(texto)) if not unicodedata.combining(c))
     return ' '.join(sem.casefold().split())
 
 
+def base_coluna(nome):
+    """Nome sem o sufixo que o QGIS acrescenta em junções: FAZ_2 -> FAZ, FAZENDA_2_ -> FAZENDA, AREA_2_2 -> AREA."""
+    return re.sub(r'(_\d*)+$', '', simples(nome).upper()) or simples(nome).upper()
+
+
 def detectar_campos(colunas, aliases):
-    """Escolhe a coluna de cada nível da hierarquia pelo primeiro nome da lista que existir."""
-    por_nome = {simples(c).upper(): c for c in colunas}
+    """Sugere a coluna de cada nível da hierarquia: o primeiro nome da lista que existir, exato ou com o
+    sufixo de junção (FAZ_2). O usuário confirma ou troca na tela do lote."""
+    exatos = {simples(c).upper(): c for c in colunas}
+    por_base = {}
+    for c in colunas:
+        por_base.setdefault(base_coluna(c), c)
     escolhido = {}
     for nivel in ('fazenda', 'aglomerado', 'talhao', 'fazenda_nome', 'area_ha'):
+        usados = set(escolhido.values())
         for alias in aliases.get(nivel, []):
-            c = por_nome.get(simples(alias).upper())
-            if c and (nivel != 'fazenda_nome' or c != escolhido.get('fazenda')):
+            a = simples(alias).upper()
+            c = exatos.get(a) or por_base.get(a)
+            if c and c not in usados:
                 escolhido[nivel] = c
                 break
     return escolhido

@@ -255,3 +255,12 @@ def test_admin_usuarios_e_regras(c):
     with TestClient(app) as outro:
         tk = outro.post('/api/auth/login', json={'usuario': 'maria', 'senha': '123456'}).json()['token']
         assert outro.get('/api/admin/usuarios', headers={'Authorization': f'Bearer {tk}'}).status_code == 403
+
+
+def test_colunas_da_base_padrao():
+    """Base padrão dos usuários (BASE GEO 2026): colunas com o sufixo que o QGIS põe nas junções."""
+    from app.importacao import detectar_campos
+    from app.regras import CAMPOS_PADRAO
+    cols = ['TALHAO_2', 'SAFRA_2', 'PERPRO_2', 'FAZ_2', 'SETOR_2', 'DE_FAZ_2', 'DE_PS_2', 'CLIENTE_2', 'FAZENDA_2_', 'AREA_2_2']
+    assert detectar_campos(cols, CAMPOS_PADRAO) == {
+        'fazenda': 'FAZ_2', 'aglomerado': 'CLIENTE_2', 'talhao': 'TALHAO_2', 'fazenda_nome': 'FAZENDA_2_', 'area_ha': 'AREA_2_2'}

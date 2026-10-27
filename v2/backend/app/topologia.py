@@ -190,7 +190,7 @@ def fmt_m(m):
 def rotulo(f):
     if f.get('linha'):
         return f"Linha #{f['indice'] + 1}" + (f" ({f['camada']})" if f.get('camada') else '')
-    return f"Talhão {f['talhao'] or '?'}" + (f" ({f['aglomerado']})" if f.get('aglomerado') else '')
+    return f"Talhão {f['talhao'] or '?'}"
 
 
 def _ponto(g):

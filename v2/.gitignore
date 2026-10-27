@@ -1,0 +1,10 @@
+# ambiente e dependências
+backend/.venv/
+frontend/node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+# dados locais: banco, segredo do token e exemplos gerados
+backend/dados/
+# build do frontend (gerado por npm run build)
+frontend/dist/

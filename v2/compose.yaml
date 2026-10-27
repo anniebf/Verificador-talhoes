@@ -1,0 +1,25 @@
+# Verificador de Talhões v2
+#   docker compose up -d --build      -> http://<ip-ou-dns-do-servidor>:8080
+#   PORTA=80 docker compose up -d     -> outra porta
+services:
+  verificador:
+    build: .
+    image: verificador-talhoes:2
+    container_name: verificador-talhoes-v2
+    restart: unless-stopped
+    ports:
+      - "${PORTA:-8080}:8080"
+    environment:
+      # primeiro admin (só vale quando o banco está vazio; a senha é trocada no primeiro login)
+      VT_ADMIN_USUARIO: ${VT_ADMIN_USUARIO:-admin}
+      VT_ADMIN_SENHA: ${VT_ADMIN_SENHA:-admin}
+    volumes:
+      # banco SQLite e segredo dos tokens: sobrevivem a atualizações da imagem
+      - dados:/dados
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+
+volumes:
+  dados:

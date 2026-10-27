@@ -198,6 +198,67 @@ def _ponto(g):
     return [p.x, p.y]
 
 
+# borda a menos disso de outro talhão é divisa (inclui vãos finos entre talhões, que são lacunas)
+DIVISA_M = 3.0
+
+
+def _corredor(p0, p1, largura_m, centro_furo):
+    """Faixa de `largura_m` de p0 (no buraco) a p1 (na borda), passando um pouco das duas pontas para o corte
+    abrir de fato (borda inclinada não deixa lasca). Em metros."""
+    (x0, y0), (x1, y1) = p0, p1
+    if float(np.hypot(x1 - x0, y1 - y0)) < 1e-6:  # buraco encostado na borda: sai do centro do buraco para fora
+        x0, y0 = centro_furo
+    dx, dy = x1 - x0, y1 - y0
+    n = float(np.hypot(dx, dy)) or 1.0
+    ux, uy = dx / n, dy / n
+    ext = largura_m + 1.0
+    return LineString([(x0 - ux * ext, y0 - uy * ext), (x1 + ux * ext, y1 + uy * ext)]).buffer(largura_m / 2, cap_style='flat')
+
+
+PONTA_M2 = 5.0  # pedacinho que o corte separa numa borda inclinada: sai junto com o corredor
+
+
+def abre(parte_m, furo_m, canal_m):
+    """O corredor abre o buraco sem dividir o talhão? (mesma conta da correção, em metros)"""
+    novo = poligonos(shapely.difference(parte_m, canal_m))
+    novo = [x for x in novo if x.area >= PONTA_M2] if len(novo) > 1 else novo
+    pt = furo_m.representative_point()
+    return len(novo) == 1 and not any(Polygon(r).contains(pt) for r in novo[0].interiors) and not novo[0].contains(pt)
+
+
+def escape(parte, anel, vizinhos, med, largura_m, fechados=None, ja=()):
+    """Corredor (no sistema do lote) que liga o buraco `anel` à borda de `parte` pelo caminho mais curto.
+
+    Só sai pela borda livre: que não encosta em outro talhão nem dá para um vão cercado de talhões
+    (`fechados`), para o escape não abrir dentro do vizinho nem virar lacuna. O caminho tem de ficar dentro
+    do talhão e abrir o buraco sem dividir o talhão, contando os escapes já propostos nele (`ja`, em metros).
+    Devolve (corredor, comprimento em metros), ou (None, motivo) quando não há saída automática.
+    """
+    pm, am = med.m(parte), med.m(anel)
+    furo_m = Polygon(am)
+    borda = pm.exterior
+    dentro = Polygon(borda).buffer(0.01)
+    centro = shapely.centroid(furo_m).coords[0]
+    # os buracos do próprio talhão também são vãos fechados da fazenda: só contam os que ficam fora dele
+    fora = shapely.difference(med.m(fechados), Polygon(borda).buffer(-0.5)) if fechados is not None else None
+    tampa = [med.m(v).boundary for v in vizinhos] + ([fora] if fora is not None and not fora.is_empty else [])
+    if tampa:
+        divisa = shapely.union_all(np.array(tampa, dtype=object)).buffer(DIVISA_M)
+        solta = shapely.difference(borda, divisa)
+        if solta.is_empty:
+            return None, 'o talhão não tem borda livre (toda a borda encosta em outro talhão)'
+    else:
+        solta = borda
+    caminho = shapely.shortest_line(am, solta)
+    if not dentro.covers(caminho):
+        return None, 'o caminho mais curto até a borda livre passa por fora do talhão'
+    canal = _corredor(*caminho.coords, largura_m, centro)
+    atual = shapely.difference(pm, shapely.union_all(list(ja))) if ja else pm
+    if not abre(atual, furo_m, canal):
+        return None, 'o corredor até a borda livre dividiria o talhão em partes'
+    return canal, float(caminho.length)
+
+
 # ---------- detecção ----------
 def auditar(feicoes, med, regras, fazendas_alvo=None):
     """feicoes: [{'id','fazenda','aglomerado','talhao','linha','indice','camada','geom'}].
@@ -300,16 +361,31 @@ def auditar(feicoes, med, regras, fazendas_alvo=None):
                     carac={'partes': len(partes), 'area_parte_ha': round(a / 1e4, 4), 'percentual_do_talhao': round(razao, 2),
                            'distancia_ao_principal_m': round(vao, 1)})
 
-    # ---- C. buracos (os com formato de estrada vão para D)
+    arr = np.array([G[k] for k in validos], dtype=object)
+    arvore = shapely.STRtree(arr) if validos else None
+
+    # vãos cercados pelos talhões de uma fazenda (como na regra de lacuna), para o escape não sair neles
+    cache_vaos = {}
+
+    def vaos_fechados(faz):
+        if faz not in cache_vaos:
+            ks = [k for k in validos if pol[k]['fazenda'] == faz]
+            uniao = shapely.union_all(np.array([G[k] for k in ks], dtype=object)) if len(ks) > 1 else None
+            aneis = [a for pt in poligonos(uniao) for a in pt.interiors]
+            cache_vaos[faz] = shapely.multilinestrings(aneis) if aneis else None
+        return cache_vaos[faz]
+
+    # ---- C. buracos (os com formato de estrada vão para D). Todo buraco precisa de um escape até a borda
     if (p := ativa('buraco_interno')) is not None:
         for k in integros:
             f = pol[k]
+            vizinhos = [G[validos[i]] for i in arvore.query(G[k], predicate='dwithin', distance=med.tol(DIVISA_M)) if validos[i] != k]
+            fechados = vaos_fechados(f['fazenda'])
+            ja = []  # escapes já propostos neste talhão (em metros)
             for parte in poligonos(G[k]):
                 for anel in parte.interiors:
                     furo = Polygon(anel)
                     fm = med.m(furo)
-                    if fm.area > p['area_max_ha'] * 1e4:
-                        continue
                     larg, comp = forma(fm)
                     if est is not None and eh_estrada(larg, comp, est):
                         add('corte_estrada', f, f'{nome[f["id"]]}: faixa vazia de {fmt_m(larg)} x {fmt_m(comp)} atravessando o talhão.',
@@ -317,14 +393,23 @@ def auditar(feicoes, med, regras, fazendas_alvo=None):
                             'suspeito', destaque=furo, area=fm.area,
                             carac={'largura_m': round(larg, 1), 'comprimento_m': round(comp), 'area_ha': round(fm.area / 1e4, 4), 'onde': 'dentro do talhão'})
                         continue
-                    pode = fm.area <= p['area_max_preencher_ha'] * 1e4
-                    add('buraco_interno', f, f'{nome[f["id"]]}: buraco de {fmt_area(fm.area)}.',
-                        f'Anel interno de {fmt_area(fm.area)}. ' + (f'Até {p["area_max_preencher_ha"]} ha: pode ser preenchido.' if pode
-                                                                   else f'Acima de {p["area_max_preencher_ha"]} ha: avaliar à mão (reserva, sede, açude…).'),
+                    canal_m, comp_esc = escape(parte, anel, vizinhos, med, p['largura_escape_m'], fechados, ja)
+                    if canal_m is None:
+                        canal = None
+                        motivo = (f'Anel interno de {fmt_area(fm.area)} fechado dentro do talhão. Todo buraco precisa de um escape, mas '
+                                  f'{comp_esc}: abrir o escape à mão.')
+                    else:
+                        ja.append(canal_m)
+                        canal = med.de_m(canal_m)
+                        motivo = (f'Anel interno de {fmt_area(fm.area)} fechado dentro do talhão. Todo buraco precisa de um escape: '
+                                  f'proposta de abrir um corredor de {fmt_m(p["largura_escape_m"])} por {fmt_m(comp_esc)} até a borda, '
+                                  'pelo caminho mais curto, saindo numa borda livre (que não encosta em outro talhão).')
+                    add('buraco_interno', f, f'{nome[f["id"]]}: buraco de {fmt_area(fm.area)} sem escape.', motivo,
                         'suspeito', destaque=furo, area=fm.area,
-                        op={'tipo': 'preencher_buraco', 'alvo': f['id'], 'ponto': _ponto(furo)} if pode else None,
+                        op={'tipo': 'abrir_escape', 'alvo': f['id'], 'ponto': _ponto(furo), 'faixa': wkb_hex(canal)} if canal is not None else None,
                         carac={'area_ha': round(fm.area / 1e4, 4), 'perimetro_m': round(fm.length), 'largura_media_m': round(larg, 1),
-                               'percentual_do_talhao': round(fm.area / GM[k].area * 100, 2) if GM[k].area else None})
+                               'percentual_do_talhao': round(fm.area / GM[k].area * 100, 2) if GM[k].area else None,
+                               'comprimento_escape_m': round(comp_esc, 1) if canal is not None else None})
 
     # ---- desempenho: excesso de vértices
     if (p := ativa('excesso_vertices')) is not None:
@@ -348,9 +433,6 @@ def auditar(feicoes, med, regras, fazendas_alvo=None):
                 'suspeito', area=gm.area,
                 op={'tipo': 'simplificar', 'alvo': f['id'], 'tol_m': p['tolerancia_m'], 'var_max': p['variacao_area_max_pct']} if ok else None,
                 carac={'vertices': nv, 'vertices_depois': nv1, 'espacamento_medio_m': round(gm.length / nv, 2), 'variacao_area_pct': round(var, 3)})
-
-    arr = np.array([G[k] for k in validos], dtype=object)
-    arvore = shapely.STRtree(arr) if validos else None
 
     # ---- E. sobreposições
     if (p := ativa('sobreposicao')) is not None and validos:
@@ -404,6 +486,9 @@ def auditar(feicoes, med, regras, fazendas_alvo=None):
                     # quem só encosta na ponta do vão não conta como vizinho
                     ordem = [viz[i] for i in np.argsort(-divisa) if divisa[i] >= med.tol(0.5)]
                     if len(ordem) < 2:
+                        continue
+                    # buraco com escape aberto na divisa: quase todo o contorno é de um talhão só
+                    if sorted(divisa, reverse=True)[1] <= med.tol(5.0) and sorted(divisa, reverse=True)[0] >= 0.9 * vao.exterior.length:
                         continue
                     larg, comp = forma(vm)
                     alvo = pol[ordem[0]]

@@ -30,7 +30,7 @@ const ROTULO_CARAC = {
   percentual_outro: '% do outro talhão', fazendas: 'Fazendas', vizinhos: 'Vizinhos', repetidos: 'Vértices repetidos',
   motivo_geos: 'Motivo (GEOS)', partes_apos_reparo: 'Partes após o reparo', area_apos_reparo_ha: 'Área após o reparo (ha)',
   comprimento_dentro_m: 'Comprimento dentro do talhão (m)', largura_faixa_m: 'Largura da faixa (m)', onde: 'Onde', distancia_m: 'Distância (m)',
-  registros: 'Registros', fechado: 'Circuito fechado',
+  registros: 'Registros', fechado: 'Circuito fechado', comprimento_escape_m: 'Comprimento do escape (m)',
 }
 
 export default function Revisao() {

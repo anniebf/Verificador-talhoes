@@ -8,9 +8,9 @@ operação é descartada e a ocorrência fica como "falha na correção".
 import shapely
 from shapely import LineString, MultiLineString, Point, Polygon
 
-from .topologia import _repetidos, de_hex, juntar, limpar, linhas, poligonos
+from .topologia import PONTA_M2, _repetidos, de_hex, juntar, limpar, linhas, poligonos
 
-ORDEM_OPS = ['remover_feicao', 'tornar_valida', 'remover_repetidos', 'preencher_buraco', 'remover_parte',
+ORDEM_OPS = ['remover_feicao', 'tornar_valida', 'remover_repetidos', 'preencher_buraco', 'abrir_escape', 'remover_parte',
              'simplificar', 'subtrair', 'anexar', 'recortar_faixa', 'conectar']
 
 DESCRICAO_OP = {
@@ -18,6 +18,7 @@ DESCRICAO_OP = {
     'tornar_valida': 'Reparar a geometria (make_valid)',
     'remover_repetidos': 'Remover vértices repetidos',
     'preencher_buraco': 'Preencher o buraco',
+    'abrir_escape': 'Abrir o escape do buraco até a borda',
     'remover_parte': 'Remover a parte separada',
     'simplificar': 'Simplificar o contorno',
     'subtrair': 'Recortar a área sobreposta',
@@ -54,6 +55,13 @@ def aplicar_op(geoms, op, med):
     elif t == 'preencher_buraco':
         pt = Point(op['ponto'])
         novo = juntar([Polygon(p.exterior, [r for r in p.interiors if not Polygon(r).contains(pt)]) for p in poligonos(atual)])
+    elif t == 'abrir_escape':
+        # sem grade de 1 mm: o resto do contorno fica idêntico (a grade mexe em todos os vértices e abre
+        # frestas nas divisas com os vizinhos)
+        novo = limpar(shapely.difference(atual, de_hex(op['faixa'])))
+        # o corte numa borda inclinada pode separar uma pontinha do talhão: ela sai junto com o corredor
+        if novo is not None and len(poligonos(novo)) > len(poligonos(atual)):
+            novo = juntar([p for p in poligonos(novo) if med.area(p) >= PONTA_M2]) or novo
     elif t == 'remover_parte':
         pt = Point(op['ponto'])
         sobra = [p for p in poligonos(atual) if not p.contains(pt)]
@@ -137,6 +145,17 @@ def validar(op, antes, depois, med, vizinhos, area_esperada_m2=0.0, area_min_m2=
         resolvido = not any(Polygon(r).contains(pt) for p in poligonos(d) for r in p.interiors)
         ck('Problema resolvido', resolvido, 'O buraco não existe mais.' if resolvido else 'O buraco continua.')
         ck('Limites da regra', abs(delta - area_esperada_m2) <= folga, f'Área somada: {delta:.1f} m² (buraco: {area_esperada_m2:.1f} m²).')
+    elif t == 'abrir_escape':
+        pt = Point(op['ponto'])
+        fechado = any(Polygon(r).contains(pt) for p in poligonos(d) for r in p.interiors)
+        resolvido = not fechado and not d.contains(pt)
+        ck('Problema resolvido', resolvido, 'O buraco agora tem saída até a borda do talhão.' if resolvido else 'O buraco continua fechado.')
+        no_canal = med.area(limpar(shapely.intersection(a, de_hex(op['faixa']))))
+        partes = len(poligonos(d)) <= len(poligonos(a))
+        # folga: a pontinha descartada e o arredondamento de 1 mm nos contornos
+        ck('Limites da regra', partes and -delta <= no_canal + PONTA_M2 + 1.0,
+           f'Área retirada: {-delta:.1f} m² (corredor do escape dentro do talhão: {no_canal:.1f} m²).'
+           + ('' if partes else ' O escape dividiu o talhão em partes.'))
     elif t == 'remover_parte':
         pt = Point(op['ponto'])
         resolvido = not any(p.contains(pt) for p in poligonos(d))

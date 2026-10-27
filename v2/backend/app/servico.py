@@ -560,6 +560,7 @@ AVISOS_OP = {
     'anexar': 'A lacuna é somada inteira a um vizinho.',
     'remover_parte': 'Remover partes separadas apaga área do talhão.',
     'preencher_buraco': 'Preencher buracos soma área ao talhão.',
+    'abrir_escape': 'O escape tira do talhão a área do corredor entre o buraco e a borda.',
     'recortar_faixa': 'O recorte da faixa de estrada pode dividir o talhão.',
     'remover_feicao': 'Registros removidos saem da nova versão (continuam na base original).',
     'tornar_valida': 'O reparo de geometria pode mudar a área de laços cruzados.',

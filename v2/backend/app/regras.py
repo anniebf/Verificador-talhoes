@@ -34,10 +34,11 @@ PADRAO = {
     },
     'buraco_interno': {
         'nome': 'Buraco interno', 'severidade': 'media', 'grupo': 'C',
-        'descricao': 'Anel interno no talhão (área vazia). Só propõe preencher até o limite de área; maiores ficam para avaliação manual. '
-                     'Faixas com formato de estrada vão para "Possível corte por estrada".',
-        'limitacoes': 'O buraco pode ser reserva, sede, açude ou carreador legítimo. Preencher soma a área ao talhão.',
-        'params': {'area_max_ha': 5.0, 'area_max_preencher_ha': 1.0},
+        'descricao': 'Anel interno fechado no talhão (área vazia). Todo buraco precisa de um escape: a correção proposta abre um '
+                     'corredor estreito do buraco até a borda do talhão, pelo caminho mais curto (de preferência numa borda que não '
+                     'encosta em outro talhão). Faixas com formato de estrada vão para "Possível corte por estrada".',
+        'limitacoes': 'O escape tira do talhão a área do corredor (largura x comprimento). Confira na prévia por onde ele sai.',
+        'params': {'largura_escape_m': 1.0},
     },
     'corte_estrada': {
         'nome': 'Possível corte por estrada', 'severidade': 'media', 'grupo': 'D',
@@ -126,7 +127,9 @@ def carregar(s):
     out = {}
     for chave, r in PADRAO.items():
         g = guardadas.get(chave)
-        out[chave] = {'ativo': g.ativo if g else True, 'params': {**r['params'], **((g.params if g else None) or {})}}
+        guardado = (g.params if g else None) or {}
+        # só os parâmetros que a regra usa hoje (um parâmetro antigo guardado no banco é ignorado)
+        out[chave] = {'ativo': g.ativo if g else True, 'params': {k: guardado.get(k, v) for k, v in r['params'].items()}}
     g = guardadas.get('campos')
     out['campos'] = {**CAMPOS_PADRAO, **((g.params if g else None) or {})}
     return out

@@ -29,7 +29,7 @@ ESPERADO = {
     ('5004', 'autointersecao'): (1, 'confirmado', True),
     ('5004', 'vertices_duplicados'): (1, 'confirmado', True),
     ('5004', 'parte_solta'): (1, 'suspeito', True),        # 0,25 ha = 1,5% do talhão: dentro dos critérios
-    ('5004', 'buraco_interno'): (1, 'suspeito', True),     # 1,00 ha: no limite de preenchimento
+    ('5004', 'buraco_interno'): (1, 'suspeito', True),     # 1,00 ha: proposta de escape até a borda
     ('5004', 'sobreposicao'): (1, 'confirmado', True),
     ('5004', 'lacuna'): (1, 'confirmado', True),           # vão de 2 m: lasca
     ('5010', 'parte_solta'): (1, 'suspeito', False),       # duas partes de 9 ha: multiparte legítimo, sem remoção
@@ -176,7 +176,9 @@ def test_fluxo_completo(c):
     # a falha não entrou na nova versão: o talhão 002 continua com a área original
     v2 = {f['properties']['talhao']: f for f in c.get(f'/api/lotes/{lid}/mapa', params={'fazenda': '5004'}).json()['features']}
     assert abs(v2['002']['properties']['areaHa'] - 16.8) < 0.001
-    assert abs(v2['007']['properties']['areaHa'] - 16.0) < 0.001  # buraco preenchido
+    # buraco com escape: sai 1 ha do buraco e o corredor de 1 m x 50 m até a borda livre
+    assert abs(v2['005']['properties']['areaHa'] - (15.0 - 0.005)) < 0.001
+    assert v2['005']['geometry']['type'] == 'Polygon' and len(v2['005']['geometry']['coordinates']) == 1  # sem anel interno
 
     depois = c.get(f'/api/lotes/{lid}/inconsistencias').json()
     est = {(i['fazenda'], i['tipo']): i['status'] for i in depois}
@@ -341,3 +343,24 @@ def test_fazendas_sem_codigo_nome_composto_e_acentos(c):
         saida = gpd.read_file(next(Path(d).rglob('*.shp')))
     obs = dict(zip(saida['FAZ'].fillna(''), saida['OBS'].fillna('')))
     assert obs['12601'].startswith('SOJA 1ª') and dict(zip(saida['FAZ'].fillna(''), saida['FAZENDA'].fillna('')))['12601'] == 'BF-CLARÃO DA LUA'
+
+
+def test_escape_do_buraco_prefere_borda_livre():
+    from shapely.geometry import Polygon, box
+    from app.correcao import aplicar_op
+    from app.topologia import Medidor, escape, wkb_hex
+    med = Medidor('', '')  # coordenadas já em metros
+    furo = [(20, 180), (60, 180), (60, 220), (20, 220)]  # a 20 m da borda esquerda
+    talhao = Polygon(box(0, 0, 400, 400).exterior.coords, [furo])
+    # sozinho: sai pela esquerda, o caminho mais curto
+    canal, comp = escape(talhao, talhao.interiors[0], [], med, 1.0)
+    assert abs(comp - 20) < 1e-6
+    # com um vizinho encostado na esquerda: não abre dentro dele, sai pela borda livre mais próxima (180 m)
+    canal, comp = escape(talhao, talhao.interiors[0], [box(-400, 0, 0, 400)], med, 1.0)
+    assert abs(comp - 180) < 1e-6
+    # cercado de vizinhos dos quatro lados: sem saída automática
+    cerca = [box(-400, 0, 0, 400), box(400, 0, 800, 400), box(0, -400, 400, 0), box(0, 400, 400, 800)]
+    assert escape(talhao, talhao.interiors[0], cerca, med, 1.0)[0] is None
+    novo = aplicar_op({1: talhao}, {'tipo': 'abrir_escape', 'alvo': 1, 'faixa': wkb_hex(canal)}, med)[1]
+    assert novo.geom_type == 'Polygon' and not novo.interiors and novo.is_valid
+    assert 180 <= talhao.area - novo.area <= 182  # corredor de 1 m x 180 m (+ a folga que passa do buraco)

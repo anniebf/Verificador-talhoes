@@ -33,7 +33,8 @@ def fazenda_a():
     t = grade(X0, Y0, 4, 3)
     t[1] = box(X0 + 380, Y0, X0 + 800, Y0 + 400)                       # sobrepõe 20 m sobre o talhão 1
     t[5] = box(X0 + 400, Y0 + 400, X0 + 798, Y0 + 800)                  # deixa vão de 2 m com o talhão 7
-    t[6] = Polygon(t[6].exterior.coords, [[(X0 + 950, Y0 + 550), (X0 + 1050, Y0 + 550), (X0 + 1050, Y0 + 650), (X0 + 950, Y0 + 650)]])
+    # buraco de 1 ha no 005, na beira da fazenda: o escape sai pela borda livre (a 50 m, à esquerda)
+    t[4] = Polygon(t[4].exterior.coords, [[(X0 + 50, Y0 + 550), (X0 + 150, Y0 + 550), (X0 + 150, Y0 + 650), (X0 + 50, Y0 + 650)]])
     t[3] = MultiPolygon([t[3], box(X0 + 1650, Y0 + 50, X0 + 1700, Y0 + 100)])  # pedacinho solto fora
     x, y = X0, Y0 + 800                                                  # "gravata": autointerseção
     t[8] = Polygon([(x, y), (x + 400, y + 400), (x + 400, y), (x, y + 400), (x, y)])

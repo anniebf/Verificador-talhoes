@@ -14,7 +14,7 @@ const ROTULOS = {
   area_max_m2: 'Área máxima (m²)',
   recortar_de: 'Recortar a sobreposição de qual talhão',
   razao_max_pct: 'Proporção máxima da parte no talhão (%)',
-  area_max_preencher_ha: 'Preencher automaticamente até (ha)',
+  largura_escape_m: 'Largura do escape (m)',
   largura_min_m: 'Largura mínima de estrada (m)',
   largura_max_m: 'Largura máxima de estrada (m)',
   comprimento_min_m: 'Comprimento mínimo de estrada (m)',

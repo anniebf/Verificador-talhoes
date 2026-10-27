@@ -263,4 +263,81 @@ def test_colunas_da_base_padrao():
     from app.regras import CAMPOS_PADRAO
     cols = ['TALHAO_2', 'SAFRA_2', 'PERPRO_2', 'FAZ_2', 'SETOR_2', 'DE_FAZ_2', 'DE_PS_2', 'CLIENTE_2', 'FAZENDA_2_', 'AREA_2_2']
     assert detectar_campos(cols, CAMPOS_PADRAO) == {
-        'fazenda': 'FAZ_2', 'aglomerado': 'CLIENTE_2', 'talhao': 'TALHAO_2', 'fazenda_nome': 'FAZENDA_2_', 'area_ha': 'AREA_2_2'}
+        'fazenda': 'FAZ_2', 'aglomerado': 'CLIENTE_2', 'talhao': 'TALHAO_2', 'fazenda_nome': 'FAZENDA_2_',
+        'fazenda_detalhe': 'DE_FAZ_2', 'area_ha': 'AREA_2_2'}
+
+
+# ---------- nomes das fazendas, fazendas sem código e acentos (bases reais) ----------
+def test_nome_e_chave_da_fazenda():
+    from app.importacao import chave_fazenda, nomes_de_fazenda
+    # FAZENDA é o grupo e DE_FAZ a fazenda: os dois juntos; iguais (sem contar acento/maiúscula), um só
+    nomes = nomes_de_fazenda([('5004', 'MALU', 'EMA'), ('5004', 'MALU', 'EMA'), ('5002', 'MALU', 'BOA SORTE'),
+                              ('4001', 'Filadelfia', 'FILADÉLFIA'), ('9', '', 'Só detalhe')])
+    assert nomes == {'5004': 'MALU · EMA', '5002': 'MALU · BOA SORTE', '4001': 'Filadelfia', '9': 'Só detalhe'}
+    # sem código: cada fazenda fica separada pelo nome; sem código e sem nome: Sem fazenda
+    assert chave_fazenda('5004', 'MALU', 'EMA') == '5004'
+    assert chave_fazenda('', '', 'Sto Antonio do Mutum') == '#Sto Antonio do Mutum'
+    assert chave_fazenda('', 'SANTA RITA', 'X') == '#SANTA RITA'
+    assert chave_fazenda('', '', '') == ''
+
+
+def test_texto_utf8_com_celulas_latin1():
+    from app.importacao import _decodificar
+    assert _decodificar('CLARÃO'.encode('utf-8').decode('latin1')) == ('CLARÃO', False)
+    assert _decodificar('1ª SAFRA'.encode('cp1252').decode('latin1')) == ('1ª SAFRA', True)
+
+
+def _base_fazendas(pasta):
+    """Base como as reais: códigos com o mesmo FAZENDA (MALU), talhões sem código (só com o nome), sem nada,
+    e um .cpg UTF-8 com uma célula gravada em Latin-1."""
+    import geopandas as gpd
+    import pyogrio
+    from shapely.geometry import box
+    linhas = [  # FAZ, FAZENDA, DE_FAZ, TALHAO, OBS
+        ('5002', 'MALU', 'BOA SORTE', '01', ''), ('5004', 'MALU', 'EMA', '01', ''), ('5004', 'MALU', 'EMA', '02', ''),
+        ('4001', 'Filadelfia', 'FILADELFIA', '01', ''), ('12601', 'BF-CLARÃO DA LUA', '', '01', 'SOJA 1ª SAFRA'),
+        ('', '', 'Sto Antonio do Mutum', '01', ''), ('', '', 'Sto Antonio do Mutum', '02', ''), ('', '', 'Sto Antonio do Mutum', '03', ''),
+        ('', '', 'Itiquira', '01', ''), ('', '', 'Itiquira', '02', ''), ('', 'SANTA RITA', 'SANTA RITA', '01', ''),
+        ('', '', '', '01', ''), ('', '', '', '02', ''),
+    ]
+    geoms = [box(-50 + k * 0.01, -21, -50 + k * 0.01 + 0.008, -20.992) for k in range(len(linhas))]
+    gdf = gpd.GeoDataFrame([dict(zip(('FAZ', 'FAZENDA', 'DE_FAZ', 'TALHAO', 'OBS'), l)) for l in linhas], geometry=geoms, crs='EPSG:4674')
+    pasta.mkdir(parents=True, exist_ok=True)
+    pyogrio.write_dataframe(gdf, pasta / 'base.shp', driver='ESRI Shapefile', encoding='UTF-8')
+    (pasta / 'base.cpg').write_text('UTF-8')
+    dbf = (pasta / 'base.dbf').read_bytes()
+    assert 'SOJA 1ª SAFRA'.encode() in dbf
+    # a célula OBS passa a ter o "ª" em Latin-1 (1 byte + espaço, para não mudar a largura do campo)
+    (pasta / 'base.dbf').write_bytes(dbf.replace('1ª'.encode(), b'1\xaa '))
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w') as z:
+        for ext in ('shp', 'shx', 'dbf', 'prj', 'cpg'):
+            z.write(pasta / f'base.{ext}', f'base.{ext}')
+    return buf.getvalue()
+
+
+def test_fazendas_sem_codigo_nome_composto_e_acentos(c):
+    zip_ = _base_fazendas(TMP / 'base_fazendas')
+    lote = c.post('/api/lotes', files=[('arquivos', ('base_fazendas.zip', zip_))], data={'nome': 'fazendas'}).json()
+    lid = lote['id']
+    det = c.get(f'/api/lotes/{lid}').json()
+    assert det['campos']['fazenda'] == 'FAZ' and det['campos']['fazenda_nome'] == 'FAZENDA' and det['campos']['fazenda_detalhe'] == 'DE_FAZ'
+    faz = {f['codigo']: f for f in det['fazendas'] if f['talhoes']}
+    # 1) nome FAZENDA · DE_FAZ: os códigos do grupo MALU não ficam todos iguais
+    assert faz['5002']['nome'] == 'MALU · BOA SORTE' and faz['5004']['nome'] == 'MALU · EMA'
+    assert faz['4001']['nome'] == 'Filadelfia'
+    # 2) sem código: uma fazenda por nome, nada é juntado num grupo só
+    assert (faz['#Sto Antonio do Mutum']['talhoes'], faz['#Itiquira']['talhoes'], faz['#SANTA RITA']['talhoes']) == (3, 2, 1)
+    assert faz['']['talhoes'] == 2 and faz['']['nome'] == ''
+    # ... e continuam apontados como atributo ausente (falta o código)
+    aus = c.get(f'/api/lotes/{lid}/inconsistencias', params={'tipo': 'atributo_ausente'}).json()
+    assert len(aus) == 8 and sum('código da fazenda' in i['descricao'] for i in aus) == 6
+    # 3) acentos: UTF-8 certo nas células UTF-8 e Latin-1 certo na célula Latin-1
+    assert faz['12601']['nome'] == 'BF-CLARÃO DA LUA'
+    assert 'Latin-1' in str(c.get('/api/auditoria', params={'lote_id': lid}).json())  # o aviso fica no log
+    import geopandas as gpd
+    with tempfile.TemporaryDirectory() as d:
+        zipfile.ZipFile(io.BytesIO(c.get(f'/api/lotes/{lid}/exportar', params={'formato': 'shp', 'versao': 1}).content)).extractall(d)
+        saida = gpd.read_file(next(Path(d).rglob('*.shp')))
+    obs = dict(zip(saida['FAZ'].fillna(''), saida['OBS'].fillna('')))
+    assert obs['12601'].startswith('SOJA 1ª') and dict(zip(saida['FAZ'].fillna(''), saida['FAZENDA'].fillna('')))['12601'] == 'BF-CLARÃO DA LUA'

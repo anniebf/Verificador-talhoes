@@ -24,7 +24,7 @@ const ROTULOS = {
   distancia_max_m: 'Distância máxima para considerar desconexão (m)',
 }
 const CAMPOS = {
-  fazenda: 'Código da fazenda', fazenda_nome: 'Nome da fazenda', aglomerado: 'Aglomerado', talhao: 'Talhão', area_ha: 'Área (ha), recalculada na exportação',
+  fazenda: 'Código da fazenda', fazenda_nome: 'Nome da fazenda', fazenda_detalhe: 'Detalhe do nome (junto quando diferente: "MALU · EMA")', aglomerado: 'Aglomerado', talhao: 'Talhão', area_ha: 'Área (ha), recalculada na exportação',
 }
 
 export default function Regras() {

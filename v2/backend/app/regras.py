@@ -97,6 +97,8 @@ PADRAO = {
 CAMPOS_PADRAO = {
     'fazenda': ['FAZ', 'COD_FAZ', 'CD_FAZ', 'ID_FAZ', 'CODFAZ', 'FAZENDA', 'DE_FAZ'],
     'fazenda_nome': ['FAZENDA', 'NOME_FAZ', 'NM_FAZ', 'DE_FAZ', 'NOMEFAZ'],
+    # detalhe do nome: quando FAZENDA é o grupo (MALU) e DE_FAZ a fazenda em si (EMA), aparece "MALU · EMA"
+    'fazenda_detalhe': ['DE_FAZ', 'DESC_FAZ', 'DS_FAZ'],
     # aglomerado = grupo de fazendas (na base padrão, CLIENTE junta as fazendas 4301, 4302, 4303…)
     'aglomerado': ['AGLOMERADO', 'AGLOM', 'AGL', 'COD_AGLOM', 'CD_AGLOM', 'NUCLEO', 'CLIENTE'],
     'talhao': ['TALHAO', 'TALHÃO', 'ID_TALHAO', 'COD_TALHAO', 'CD_TALHAO', 'NUM_TALHAO', 'TAL'],

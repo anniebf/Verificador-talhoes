@@ -487,7 +487,10 @@ def auditar(feicoes, med, regras, fazendas_alvo=None):
     # ---- atributos (só talhões)
     if ativa('atributo_ausente') is not None:
         for f in pol:
-            faltam = [n for n, v in (('fazenda', f['fazenda']), ('talhão', f['talhao'])) if not v]
+            # "#nome": tem o nome da fazenda, mas falta o código; continua sendo atributo ausente
+            sem_codigo = f['fazenda'].startswith('#')
+            faltam = [n for n, falta in (('código da fazenda' if sem_codigo else 'fazenda', not f['fazenda'] or sem_codigo),
+                                         ('talhão', not f['talhao'])) if falta]
             if faltam:
                 g = f['geom']
                 add('atributo_ausente', f, f'{nome[f["id"]]}: sem {" e sem ".join(faltam)}.',
@@ -501,7 +504,8 @@ def auditar(feicoes, med, regras, fazendas_alvo=None):
                 grupos.setdefault((f['fazenda'], f['aglomerado'], f['talhao']), []).append(f)
         for (faz, agl, tal), fs in grupos.items():
             if len(fs) > 1:
-                add('talhao_duplicado', fs[0], f'Talhão {tal} aparece {len(fs)} vezes na fazenda {faz or "?"}{f" (aglomerado {agl})" if agl else ""}.',
+                rot_faz = f'{faz[1:]} (sem código)' if faz.startswith('#') else (faz or '?')
+                add('talhao_duplicado', fs[0], f'Talhão {tal} aparece {len(fs)} vezes na fazenda {rot_faz}{f" (aglomerado {agl})" if agl else ""}.',
                     f'{len(fs)} registros com a mesma combinação fazenda/aglomerado/talhão. Pode ser talhão dividido de propósito.',
                     'suspeito', outros=fs[1:], carac={'registros': len(fs)})
     return out

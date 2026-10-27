@@ -11,6 +11,11 @@ from .log_auditoria import _latin
 from .regras import PADRAO
 
 
+def _faz(chave):
+    """Fazenda sem código (chave "#nome") aparece como "nome (sem código)"."""
+    return f'{chave[1:]} (sem código)' if chave.startswith('#') else chave
+
+
 def _ocorrencias(s, exe):
     """Ocorrências ligadas à execução: as detectadas (auditoria) ou as executadas (correção)."""
     if exe.tipo == 'auditoria':
@@ -75,7 +80,7 @@ def gerar_csv(s, exe):
         for i in sorted(incs.values(), key=lambda i: i.id):
             orig = ', '.join(f'{fs[x].camada_id}:{fs[x].indice_origem}' for x in i.feicoes if x in fs)
             w.writerow([i.id, PADRAO[i.tipo]['grupo'], PADRAO[i.tipo]['nome'], estados.CLASSIFICACOES.get(i.classificacao),
-                        i.fazenda, _talhoes(i, fs), orig, i.descricao, i.motivo, round(i.area_m2, 2),
+                        _faz(i.fazenda), _talhoes(i, fs), orig, i.descricao, i.motivo, round(i.area_m2, 2),
                         DESCRICAO_OP[i.op['tipo']] if i.op else 'não (manual)', estados.ESTADOS.get(i.status, i.status)])
     else:
         w.writerow(['ocorrencia', 'regra', 'operacao', 'resultado', 'verificacao', 'ok', 'detalhe'])
@@ -86,7 +91,7 @@ def gerar_csv(s, exe):
         w.writerow([])
         w.writerow(['feicao', 'fazenda', 'talhao', 'area_antes_ha', 'area_depois_ha', 'vertices_antes', 'vertices_depois', 'ajustes'])
         for a in exe.resumo.get('alteradas', []):
-            w.writerow([a['id'], a['fazenda'], a['talhao'], a['areaAntes'], 'removido' if a['removida'] else a['areaDepois'],
+            w.writerow([a['id'], _faz(a['fazenda']), a['talhao'], a['areaAntes'], 'removido' if a['removida'] else a['areaDepois'],
                         a['verticesAntes'], a['verticesDepois'], ', '.join(a['ajustes'])])
     return ('﻿' + buf.getvalue()).encode('utf-8')
 
@@ -119,7 +124,7 @@ def gerar_pdf(s, exe):
             t.row(['#', 'Regra', 'Classif.', 'Fazenda', 'Talhão', 'Descrição', 'Correção', 'Estado atual'])
             for i in sorted(incs.values(), key=lambda i: i.id):
                 t.row([str(i.id), _latin(PADRAO[i.tipo]['nome']), _latin(estados.CLASSIFICACOES.get(i.classificacao, '')),
-                       _latin(i.fazenda), _latin(_talhoes(i, fs)), _latin(i.descricao),
+                       _latin(_faz(i.fazenda)), _latin(_talhoes(i, fs)), _latin(i.descricao),
                        _latin(DESCRICAO_OP[i.op['tipo']] if i.op else 'manual'), _latin(estados.ESTADOS.get(i.status, i.status))])
     else:
         pdf.cell(0, 6, 'Correções executadas e validação', new_x='LMARGIN', new_y='NEXT')
@@ -137,7 +142,7 @@ def gerar_pdf(s, exe):
             with pdf.table(col_widths=(16, 30, 30, 30, 30, 30, 111), headings_style=cab, line_height=4, text_align='LEFT') as t:
                 t.row(['Feição', 'Fazenda', 'Talhão', 'Área antes (ha)', 'Área depois (ha)', 'Vértices', 'Ajustes'])
                 for a in exe.resumo['alteradas']:
-                    t.row([str(a['id']), _latin(a['fazenda']), _latin(a['talhao']), f'{a["areaAntes"]:.4f}',
+                    t.row([str(a['id']), _latin(_faz(a['fazenda'])), _latin(a['talhao']), f'{a["areaAntes"]:.4f}',
                            'removido' if a['removida'] else f'{a["areaDepois"]:.4f}', f'{a["verticesAntes"]} -> {a["verticesDepois"]}',
                            _latin(', '.join(a['ajustes']))])
     return bytes(pdf.output())

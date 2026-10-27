@@ -27,7 +27,7 @@ from .log_auditoria import registrar, trava_escrita
 from .regras import PADRAO
 
 VAZIO = shapely.to_wkb(shapely.Polygon())  # geometria vazia guardada como está; wkb None = feição removida
-NIVEIS = ('fazenda', 'fazenda_nome', 'aglomerado', 'talhao', 'area_ha')
+NIVEIS = ('fazenda', 'fazenda_nome', 'fazenda_detalhe', 'aglomerado', 'talhao', 'area_ha')
 
 
 # ---------- leitura das geometrias versionadas ----------
@@ -172,17 +172,32 @@ def importar(s, usuario, arquivos, nome_lote='', lote=None, verificacoes=None):
 
 
 def preencher_hierarquia(fs, campos):
-    """Fazenda/aglomerado/talhão vêm só das colunas escolhidas; nível sem coluna fica vazio (nada é presumido)."""
-    nomes = importacao.nomes_de_fazenda([(texto(f.atributos.get(campos.get('fazenda'))) if campos.get('fazenda') else '', f.atributos)
-                                         for f in fs], campos.get('fazenda_nome'))
+    """Fazenda/aglomerado/talhão vêm só das colunas escolhidas; nível sem coluna fica vazio (nada é presumido).
+    Talhão sem código mas com nome de fazenda fica na fazenda "#nome" (ver importacao.chave_fazenda)."""
+    pega = lambda f, nivel: texto(f.atributos.get(campos[nivel])) if campos.get(nivel) else ''
+    nomes_lidos = []  # lista, não dict por f.id: na importação as feições ainda não têm id
     for f in fs:
-        pega = lambda nivel: texto(f.atributos.get(campos[nivel])) if campos.get(nivel) else ''
-        f.fazenda, f.aglomerado, f.talhao = pega('fazenda'), pega('aglomerado'), pega('talhao')
+        nome, detalhe = pega(f, 'fazenda_nome'), pega(f, 'fazenda_detalhe')
+        f.fazenda = importacao.chave_fazenda(pega(f, 'fazenda'), nome, detalhe)
+        f.aglomerado, f.talhao = pega(f, 'aglomerado'), pega(f, 'talhao')
+        nomes_lidos.append((f.fazenda, nome, detalhe))
+    nomes = importacao.nomes_de_fazenda(nomes_lidos)
+    for f in fs:
         f.fazenda_nome = nomes.get(f.fazenda, '')
 
 
+def exibir_fazenda(chave, nome=''):
+    """Fazenda para textos (log, relatórios): "5004 · MALU", "Mutum (sem código)" ou "Sem fazenda"."""
+    if chave.startswith(importacao.SEM_CODIGO):
+        return f'{nome or chave[1:]} (sem código)'
+    if not chave:
+        return 'Sem fazenda'
+    return f'{chave} · {nome}' if nome else chave
+
+
 def _campos_txt(c):
-    rot = {'fazenda': 'fazenda', 'fazenda_nome': 'nome da fazenda', 'aglomerado': 'aglomerado', 'talhao': 'talhão', 'area_ha': 'área'}
+    rot = {'fazenda': 'fazenda', 'fazenda_nome': 'nome da fazenda', 'fazenda_detalhe': 'detalhe do nome', 'aglomerado': 'aglomerado',
+           'talhao': 'talhão', 'area_ha': 'área'}
     return ', '.join(f'{rot[k]}={c[k]}' for k in rot if c.get(k)) or 'nenhum reconhecido'
 
 
@@ -637,7 +652,7 @@ def _corrigir(s, exe, lote, ids, usuario):
             ok, checks, depois = False, [{'nome': 'Execução da operação', 'ok': False, 'detalhe': f'{type(e).__name__}: {e}'}], estado
         i.validacao, i.correcao_execucao_id = checks, exe.id
         f = fs.get(alvo)
-        faz = f'{i.fazenda} · {f.fazenda_nome}' if f and f.fazenda_nome else i.fazenda
+        faz = exibir_fazenda(i.fazenda, f.fazenda_nome if f else '')
         tal = ', '.join(dict.fromkeys((fs[x].talhao or (f'linha #{fs[x].indice_origem + 1}' if fs[x].linha else '?')) for x in i.feicoes if x in fs))
         if ok:
             registrar(s, usuario.usuario, 'correcao', f'Execução #{exe.id}: {correcao.DESCRICAO_OP[i.op["tipo"]]} ({PADRAO[i.tipo]["nome"]}) — '

@@ -88,9 +88,13 @@ export const Estado = ({ s }) => <span className={`etiqueta ${STATUS[s]?.cls || 
 export const CLASSIFICACAO = { confirmado: 'Confirmado', suspeito: 'Suspeito', inconclusivo: 'Inconclusivo' }
 export const Classe = ({ c }) => <span className={`etiqueta cl-${c}`} title="Classificação da ocorrência">{CLASSIFICACAO[c] || c}</span>
 
+// talhões sem código, mas com nome de fazenda, vêm do servidor na fazenda "#nome"
+export const semCodigo = (codigo) => String(codigo || '').startsWith('#')
+
 export function nomeFazenda(f) {
   if (!f) return ''
   if (f.codigo === '') return f.nome || 'Sem fazenda'
+  if (semCodigo(f.codigo)) return `${f.nome || f.codigo.slice(1)} (sem código)`
   return f.nome ? `${f.codigo} · ${f.nome}` : f.codigo
 }
 

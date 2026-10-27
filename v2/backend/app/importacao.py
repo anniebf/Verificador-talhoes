@@ -132,18 +132,20 @@ def ler_shapefile(shp: Path):
     cpg = irmao(shp, '.cpg')
     if cpg is None:
         avisos.append(f'{shp.name}: sem .cpg; textos lidos como Latin-1.')
+    utf8 = cpg is not None and re.match(r'\s*utf-?8', cpg.read_text(errors='replace'), re.I) is not None
     try:
-        gdf = pyogrio.read_dataframe(shp, encoding=None if cpg else 'latin1')
-        # .cpg que diz UTF-8 com textos gravados em Latin-1 (comum em bases exportadas do ArcGIS/Excel):
-        # "1ª SAFRA" chega como "1� SAFRA". Relê como Windows-1252 e fica com a leitura que estragar menos.
-        if cpg is not None and _estragados(gdf):
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore')
-                outra = pyogrio.read_dataframe(shp, encoding='cp1252')
-            if _estragados(outra) < _estragados(gdf):
-                gdf = outra
-                avisos.append(f'{shp.name}: o .cpg diz {cpg.read_text(errors="replace").strip()}, mas os textos estão em Latin-1; '
-                              'lidos como Latin-1 para os acentos saírem certos.')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            # Latin-1 lê os bytes sem perder nada; com .cpg UTF-8, cada texto é decodificado depois (_utf8_misto)
+            gdf = pyogrio.read_dataframe(shp, encoding='latin1' if cpg is None or utf8 else None)
+        if utf8:
+            # .cpg que diz UTF-8 com alguns textos gravados em Latin-1 (comum em bases editadas no ArcGIS/Excel):
+            # cada texto vira UTF-8 quando é UTF-8 válido e Latin-1 (Windows-1252) quando não é. Ler o arquivo
+            # inteiro de um jeito só estragava o outro tipo ("CLARÃO" virava "CLARÃƒO").
+            gdf, n_latin = _utf8_misto(gdf)
+            if n_latin:
+                avisos.append(f'{shp.name}: o .cpg diz UTF-8, mas {n_latin} texto(s) estão em Latin-1; '
+                              'esses foram lidos como Latin-1 para os acentos saírem certos.')
     except Exception as e:  # noqa: BLE001
         raise ErroArquivo(f'Não consegui ler {shp.name}: o arquivo parece corrompido ou incompleto ({e}).')
     if gdf.geometry.name != 'geometry':
@@ -165,10 +167,32 @@ def ler_shapefile(shp: Path):
     return gdf, (familias.pop() if familias else 'poligono'), avisos
 
 
-def _estragados(gdf):
-    """Quantos textos têm o caractere de substituição (byte que não era do encoding usado)."""
-    return sum(int(gdf[c].astype(str).str.contains('�', regex=False).sum())
-               for c in gdf.columns if c != 'geometry' and gdf[c].dtype.kind in 'OUT')
+def _decodificar(texto_latin1):
+    """Texto lido como Latin-1 (bytes intactos) -> UTF-8 se os bytes forem UTF-8 válido; senão Windows-1252.
+    Devolve (texto, veio_em_latin1)."""
+    bruto = texto_latin1.encode('latin1')
+    try:
+        return bruto.decode('utf-8'), False
+    except UnicodeDecodeError:
+        return bruto.decode('cp1252', errors='replace'), True
+
+
+def _utf8_misto(gdf):
+    """Decodifica cada texto (e o nome de cada coluna) de um GeoDataFrame lido como Latin-1."""
+    n_latin = 0
+
+    def conv(v):
+        nonlocal n_latin
+        if not isinstance(v, str) or v.isascii():
+            return v
+        t, era_latin = _decodificar(v)
+        n_latin += era_latin
+        return t
+    for c in gdf.columns:
+        if c != 'geometry' and gdf[c].dtype.kind == 'O':
+            gdf[c] = gdf[c].map(conv)
+    gdf = gdf.rename(columns={c: _decodificar(c)[0] for c in gdf.columns if c != 'geometry' and not c.isascii()})
+    return gdf, n_latin
 
 
 def simples(texto):
@@ -189,7 +213,7 @@ def detectar_campos(colunas, aliases):
     for c in colunas:
         por_base.setdefault(base_coluna(c), c)
     escolhido = {}
-    for nivel in ('fazenda', 'aglomerado', 'talhao', 'fazenda_nome', 'area_ha'):
+    for nivel in ('fazenda', 'aglomerado', 'talhao', 'fazenda_nome', 'fazenda_detalhe', 'area_ha'):
         usados = set(escolhido.values())
         for alias in aliases.get(nivel, []):
             a = simples(alias).upper()
@@ -225,13 +249,32 @@ def texto(v):
     return '' if t.upper() == 'NULL' else t
 
 
-def nomes_de_fazenda(linhas, campo_nome):
-    """Em cada código de fazenda vale o nome que mais aparece (como na v1)."""
-    if not campo_nome:
-        return {}
-    conta = collections.defaultdict(collections.Counter)
-    for cod, attrs in linhas:
-        n = texto(attrs.get(campo_nome))
-        if n and '�' not in n:
-            conta[cod][n] += 1
-    return {cod: c.most_common(1)[0][0] for cod, c in conta.items()}
+SEM_CODIGO = '#'  # chave de fazenda "#nome": talhão sem código, mas com nome de fazenda
+
+
+def chave_fazenda(codigo, nome, detalhe):
+    """Código da fazenda. Sem código, mas com nome, a chave é "#nome": cada fazenda fica separada pelo
+    nome em vez de todas caírem num grupo só. Sem código e sem nome, "" (Sem fazenda)."""
+    if codigo:
+        return codigo
+    n = nome or detalhe
+    return SEM_CODIGO + n if n and '�' not in n else ''
+
+
+def nomes_de_fazenda(linhas):
+    """linhas: (chave da fazenda, nome, detalhe). Em cada fazenda vale o nome que mais aparece; o detalhe
+    (DE_FAZ) vem junto quando diz outra coisa — "MALU · EMA" — e some quando é igual (acento e
+    maiúscula não contam). Sem nome, vale só o detalhe (como na v1)."""
+    conta_nome = collections.defaultdict(collections.Counter)
+    conta_det = collections.defaultdict(collections.Counter)
+    for chave, nome, detalhe in linhas:
+        if nome and '�' not in nome:
+            conta_nome[chave][nome] += 1
+        if detalhe and '�' not in detalhe:
+            conta_det[chave][detalhe] += 1
+    saida = {}
+    for chave in set(conta_nome) | set(conta_det):
+        n = conta_nome[chave].most_common(1)[0][0] if conta_nome[chave] else ''
+        d = conta_det[chave].most_common(1)[0][0] if conta_det[chave] else ''
+        saida[chave] = f'{n} · {d}' if n and d and simples(n) != simples(d) else (n or d)
+    return saida

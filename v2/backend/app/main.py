@@ -329,6 +329,7 @@ def reauditar(lote_id: int, d: Reauditoria | None = None, u: Usuario = Depends(a
 class Campos(BaseModel):
     fazenda: str = ''
     fazenda_nome: str = ''
+    fazenda_detalhe: str = ''
     aglomerado: str = ''
     talhao: str = ''
     area_ha: str = ''

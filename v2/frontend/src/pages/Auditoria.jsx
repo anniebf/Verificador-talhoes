@@ -7,7 +7,8 @@ import Mapa, { ESTILOS } from '../components/Mapa.jsx'
 import { Aviso, Dica, Estado, Etapas, ListaFazendas, Menu, nomeFazenda, SoltarArquivos } from '../components/Comuns.jsx'
 
 const TODAS = '*'
-const NIVEIS = [['fazenda', 'Código da fazenda'], ['fazenda_nome', 'Nome da fazenda'], ['aglomerado', 'Aglomerado (grupo de fazendas)'],
+const NIVEIS = [['fazenda', 'Código da fazenda'], ['fazenda_nome', 'Nome da fazenda'],
+  ['fazenda_detalhe', 'Detalhe do nome (ex.: DE_FAZ → "MALU · EMA")'], ['aglomerado', 'Aglomerado (grupo de fazendas)'],
   ['talhao', 'Talhão'], ['area_ha', 'Área (ha)']]
 const FC = (features) => ({ type: 'FeatureCollection', features })
 
@@ -163,7 +164,7 @@ export default function Auditoria() {
                   <button className="btn-link" onClick={() => setFicha(null)}>fechar</button>
                 </div>
                 <dl className="dl">
-                  <dt>Fazenda</dt><dd>{ficha.fazenda || '—'}{ficha.fazendaNome ? ` · ${ficha.fazendaNome}` : ''}</dd>
+                  <dt>Fazenda</dt><dd>{nomeFazenda({ codigo: ficha.fazenda || '', nome: ficha.fazendaNome }) || '—'}</dd>
                   <dt>Aglomerado</dt><dd>{ficha.aglomerado || '—'}</dd>
                   <dt>{ficha.linha ? 'Comprimento' : 'Área'}</dt><dd>{ficha.linha ? `${num(ficha.comprimentoM, 0)} m` : `${num(ficha.areaHa, 2)} ha`}</dd>
                   <dt>Vértices / partes</dt><dd>{ficha.vertices} / {ficha.partes}</dd>

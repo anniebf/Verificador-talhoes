@@ -382,3 +382,31 @@ def test_proposta_antiga_de_preencher_vira_escape_na_subida(c):
     assert d['operacao'] == 'Abrir o escape do buraco até a borda' and 'escape' in d['motivo']
     assert novo['status'] != 'aprovada'  # a aprovação era do preenchimento, não vale para o escape
     assert servico.atualizar_propostas_antigas() == 0  # já está na regra nova
+
+
+def test_buraco_tem_opcao_de_escape_ou_preencher(c):
+    lid = enviar(c, '/api/lotes', 'fazendas_exemplo.zip', nome='opcoes')['id']
+    bur = c.get(f'/api/lotes/{lid}/inconsistencias', params={'tipo': 'buraco_interno'}).json()[0]
+    url = f'/api/lotes/{lid}/inconsistencias/{bur["id"]}'
+    d = c.get(url).json()
+    assert [(o['tipo'], o['ativa'], o['disponivel']) for o in d['opcoes']] == [('abrir_escape', True, True), ('preencher_buraco', False, True)]
+    escape = next(e for e in d['envolvidas'] if e['alvo'])['depois']['areaHa']
+    assert c.post(f'/api/lotes/{lid}/decisoes', json={'ids': [bur['id']], 'decisao': 'aprovar'}).status_code == 200
+
+    # troca para preencher: a prévia soma o buraco e a aprovação anterior (do escape) não vale mais
+    d = c.post(f'{url}/opcao', json={'tipo': 'preencher_buraco'}).json()
+    assert d['operacao'] == 'Preencher o buraco' and d['status'] == 'em_revisao'
+    alvo = next(e for e in d['envolvidas'] if e['alvo'])
+    assert abs(alvo['depois']['areaHa'] - 16.0) < 0.001 and alvo['depois']['areaHa'] > escape
+    assert c.post(f'/api/lotes/{lid}/decisoes', json={'ids': [bur['id']], 'decisao': 'aprovar'}).status_code == 200
+
+    # a reauditoria mantém a opção escolhida e a decisão
+    c.post(f'/api/lotes/{lid}/auditar', json={})
+    novo = c.get(f'/api/lotes/{lid}/inconsistencias', params={'tipo': 'buraco_interno'}).json()[0]
+    d = c.get(f'/api/lotes/{lid}/inconsistencias/{novo["id"]}').json()
+    assert d['operacao'] == 'Preencher o buraco' and d['status'] == 'aprovada'
+    # e dá para voltar ao escape; opção que não existe é recusada
+    d = c.post(f'/api/lotes/{lid}/inconsistencias/{novo["id"]}/opcao', json={'tipo': 'abrir_escape'}).json()
+    assert d['operacao'] == 'Abrir o escape do buraco até a borda'
+    assert c.post(f'/api/lotes/{lid}/inconsistencias/{novo["id"]}/opcao', json={'tipo': 'simplificar'}).status_code == 400
+    assert any('Preencher o buraco' in h['nota'] for h in d['historico'])

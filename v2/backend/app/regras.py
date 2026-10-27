@@ -36,8 +36,10 @@ PADRAO = {
         'nome': 'Buraco interno', 'severidade': 'media', 'grupo': 'C',
         'descricao': 'Anel interno fechado no talhão (área vazia). Todo buraco precisa de um escape: a correção proposta abre um '
                      'corredor estreito do buraco até a borda do talhão, pelo caminho mais curto (de preferência numa borda que não '
-                     'encosta em outro talhão). Faixas com formato de estrada vão para "Possível corte por estrada".',
-        'limitacoes': 'O escape tira do talhão a área do corredor (largura x comprimento). Confira na prévia por onde ele sai.',
+                     'encosta em outro talhão). Na revisão, o usuário pode trocar para preencher o buraco. '
+                     'Faixas com formato de estrada vão para "Possível corte por estrada".',
+        'limitacoes': 'O escape tira do talhão a área do corredor (largura x comprimento): confira na prévia por onde ele sai. '
+                      'Preencher soma a área do buraco ao talhão (reserva, sede ou açude deixam de existir no desenho).',
         'params': {'largura_escape_m': 1.0},
     },
     'corte_estrada': {

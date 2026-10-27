@@ -281,6 +281,8 @@ def auditar(s, lote, usuario, fazendas=None, entrada='', verificacoes=None):
     novas = 0
     for a in achados:
         antes = conhecidas.get(a['assinatura'])
+        if antes and (antes.op or {}).get('escolhida') and a['tipo'] == 'buraco_interno':
+            a = {**a, 'op': op_buraco(antes.op['tipo'], a['op'], a['feicoes'][0], a['destaque'])}  # mantém a opção escolhida
         inicial = estados.inicial(a['op'])
         status = antes.status if antes and antes.status not in ('identificada', 'em_revisao', 'nao_corrigivel') else inicial
         # a correção proposta mudou de tipo (ex.: preencher -> abrir escape): a decisão antiga não vale para a nova
@@ -536,6 +538,7 @@ def detalhe_inconsistencia(s, lote, inc, usuario=None):
         **inconsistencia_json(inc, fs, mapa),
         'motivo': inc.motivo, 'limitacoes': inc.limitacoes, 'caracteristicas': inc.caracteristicas,
         'manual': inc.op is None, 'operacao': correcao.DESCRICAO_OP.get(inc.op['tipo']) if inc.op else None,
+        'opcoes': opcoes(inc),
         'validacao': inc.validacao,
         'original': {'type': 'FeatureCollection', 'features': [feicao_json(fs[fid], gs[fid], mapa) for fid in inc.feicoes if fid in gs and fid in fs]},
         'proposta': {'type': 'FeatureCollection', 'features': [feicao_json(fs[fid], proposta[fid], mapa) for fid in inc.feicoes
@@ -545,6 +548,46 @@ def detalhe_inconsistencia(s, lote, inc, usuario=None):
         'historico': [{'estado': estados.ESTADOS.get(h.estado, h.estado), 'usuario': h.usuario, 'dataHora': h.data_hora,
                        'execucaoId': h.execucao_id, 'nota': h.nota} for h in hist],
     }
+
+
+# ---------- opções de correção (buraco interno: abrir escape ou preencher) ----------
+OPCOES_BURACO = ('abrir_escape', 'preencher_buraco')
+
+
+def op_buraco(tipo, op, alvo, furo):
+    """A correção `tipo` para um buraco. Guarda o corredor do escape (quando houver) para poder voltar a ele."""
+    base = dict(op) if op else {'alvo': alvo, 'ponto': topologia._ponto(furo)}
+    if tipo == 'abrir_escape' and not base.get('faixa'):
+        return op
+    return {**base, 'tipo': tipo, 'escolhida': True}
+
+
+def opcoes(inc):
+    """Correções que o usuário pode escolher nesta ocorrência ([] quando a regra só tem uma)."""
+    if inc.tipo != 'buraco_interno':
+        return []
+    atual = (inc.op or {}).get('tipo')
+    return [{'tipo': t, 'nome': correcao.DESCRICAO_OP[t], 'ativa': t == atual,
+             'disponivel': t != 'abrir_escape' or bool((inc.op or {}).get('faixa'))} for t in OPCOES_BURACO]
+
+
+def escolher_opcao(s, lote, inc, tipo, usuario):
+    """Troca a correção proposta da ocorrência pela opção escolhida. A decisão anterior não vale para a
+    nova opção: a ocorrência volta para "em revisão"."""
+    if tipo not in [o['tipo'] for o in opcoes(inc) if o['disponivel']]:
+        raise ErroArquivo('Essa opção de correção não existe para esta ocorrência.')
+    if inc.status == 'corrigida':
+        raise ErroArquivo('A ocorrência já foi corrigida.')
+    if (inc.op or {}).get('tipo') == tipo:
+        return
+    furo = shapely.from_wkb(inc.destaque) if inc.destaque else None
+    inc.op = op_buraco(tipo, inc.op, inc.feicoes[0], furo)
+    inc.status = 'em_revisao'
+    inc.decidido_por, inc.decidido_em = usuario.usuario, agora()
+    nome = correcao.DESCRICAO_OP[tipo]
+    historico(s, inc, 'em_revisao', usuario.usuario, nota=f'opção de correção escolhida: {nome}')
+    registrar(s, usuario.usuario, 'opcao', f'{usuario.usuario} escolheu "{nome}" para #{inc.id} {PADRAO[inc.tipo]["nome"]}.',
+              lote_id=lote.id, versao=lote.versao_atual, fazenda=inc.fazenda)
 
 
 def decidir(s, lote, ids, decisao, usuario):

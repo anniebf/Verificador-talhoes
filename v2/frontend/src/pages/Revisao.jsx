@@ -21,6 +21,8 @@ function vertices(fc) {
   return { total, dados: FC([{ type: 'Feature', geometry: { type: 'MultiPoint', coordinates: pts }, properties: {} }]) }
 }
 const SEM_DECISAO = ['identificada', 'em_revisao']
+// nome curto das opções de correção que o usuário escolhe (buraco interno)
+const OPCAO = { abrir_escape: 'Criar escape', preencher_buraco: 'Preencher buraco' }
 const DECIDIVEL = (i) => i.status !== 'corrigida'
 const ROTULO_CARAC = {
   area_ha: 'Área (ha)', area_m2: 'Área (m²)', perimetro_m: 'Perímetro (m)', largura_media_m: 'Largura média (m)', largura_m: 'Largura (m)',
@@ -98,6 +100,15 @@ export default function Revisao() {
   const atual = lista?.find((i) => i.id === atualId)
   const pos = lista ? lista.findIndex((i) => i.id === atualId) : -1
   const cont = useMemo(() => (lista || []).reduce((c, i) => ({ ...c, [i.status]: (c[i.status] || 0) + 1 }), {}), [lista])
+
+  const escolherOpcao = async (tipo) => {
+    setSalvando(true); setErro(''); setInfo('')
+    try {
+      const d = await api.post(`/api/lotes/${id}/inconsistencias/${det.id}/opcao`, { tipo })
+      setDet(d)
+      setLista((l) => l?.map((i) => (i.id === d.id ? { ...i, status: d.status, temCorrecao: !d.manual } : i)))
+    } catch (e) { setErro(e.message) } finally { setSalvando(false) }
+  }
 
   const decidir = async (ids, decisao, avancar = true) => {
     setSalvando(true); setErro(''); setInfo('')
@@ -304,6 +315,15 @@ export default function Revisao() {
                     <h4>Por que foi apontada</h4>
                     <p>{det.motivo}</p>
                     <h4>Ação proposta</h4>
+                    {det.opcoes?.length > 0 && (
+                      <div className="botoes">
+                        {det.opcoes.map((o) => (
+                          <button key={o.tipo} className={`btn pequeno ${o.ativa ? 'ativo' : ''}`}
+                            disabled={salvando || !o.disponivel || !DECIDIVEL(det)} onClick={() => !o.ativa && escolherOpcao(o.tipo)}
+                            title={o.disponivel ? o.nome : 'Este buraco não tem escape automático'}>{OPCAO[o.tipo] || o.nome}</button>
+                        ))}
+                      </div>
+                    )}
                     <p>{det.manual ? <b className="laranja">Intervenção manual necessária: não há correção automática para este caso.</b> : det.operacao}</p>
                     {det.limitacoes && <><h4>Limitações e riscos</h4><p>{det.limitacoes}</p></>}
                     {det.validacao?.length > 0 && (

@@ -370,6 +370,23 @@ def inconsistencia(lote_id: int, inc_id: int, u: Usuario = Depends(auth.usuario_
         return d
 
 
+class Opcao(BaseModel):
+    tipo: str
+
+
+@app.post('/api/lotes/{lote_id}/inconsistencias/{inc_id}/opcao')
+def escolher_opcao(lote_id: int, inc_id: int, d: Opcao, u: Usuario = Depends(auth.usuario_atual)):
+    with trava_escrita, Sessao() as s:
+        lote = pegar_lote(s, lote_id)
+        inc = s.get(Inconsistencia, inc_id)
+        if not inc or inc.lote_id != lote.id:
+            raise HTTPException(404, 'Ocorrência não encontrada (o lote pode ter sido auditado de novo).')
+        servico.escolher_opcao(s, lote, inc, d.tipo, u)
+        d = servico.detalhe_inconsistencia(s, lote, inc, u)
+        s.commit()
+        return d
+
+
 class Decisao(BaseModel):
     ids: list[int]
     decisao: Literal['aprovar', 'rejeitar', 'pendente']

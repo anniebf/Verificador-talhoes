@@ -23,6 +23,11 @@ function vertices(fc) {
 const SEM_DECISAO = ['identificada', 'em_revisao']
 // nome curto das opções de correção que o usuário escolhe (buraco interno)
 const OPCAO = { abrir_escape: 'Criar escape', preencher_buraco: 'Preencher buraco' }
+const explicarOpcao = (o, det) => {
+  const c = det.caracteristicas || {}
+  if (o.tipo === 'abrir_escape') return o.disponivel ? `Corredor de ${num(c.comprimento_escape_m, 1)} m ligando o buraco à borda do talhão` : 'Sem caminho automático até a borda livre'
+  return `O buraco vira talhão: soma ${num(c.area_ha, 2)} ha`
+}
 const DECIDIVEL = (i) => i.status !== 'corrigida'
 const ROTULO_CARAC = {
   area_ha: 'Área (ha)', area_m2: 'Área (m²)', perimetro_m: 'Perímetro (m)', largura_media_m: 'Largura média (m)', largura_m: 'Largura (m)',
@@ -289,7 +294,9 @@ export default function Revisao() {
               legenda={[{ texto: 'Feição envolvida', cor: ESTILOS.original.color }, { texto: 'Trecho apontado', cor: ESTILOS.erro.color, fundo: ESTILOS.erro.fillColor },
                 { texto: 'Vizinhos', cor: ESTILOS.vizinho.color },
                 vert && { texto: `Vértices: ${vert.antes.total.toLocaleString('pt-BR')}`, cor: '#000', fundo: ESTILOS.original.color }].filter(Boolean)} />
-            <Mapa aoCriar={aoCriarMapa} camadas={direita} rotulo={det && det.manual ? 'Sem correção automática' : 'Prévia da correção (cópia)'}
+            <Mapa aoCriar={aoCriarMapa} camadas={direita}
+              rotulo={det && det.manual ? 'Sem correção automática'
+                : det?.opcoes?.length ? `Prévia: ${OPCAO[det.opcoes.find((o) => o.ativa)?.tipo] || 'correção'} (cópia)` : 'Prévia da correção (cópia)'}
               className="lado-proposta"
               legenda={[{ texto: 'Resultado esperado', cor: ESTILOS.proposta.color }, { texto: 'Onde estava o problema', cor: '#fff' },
                 vert?.depois && { texto: `Vértices: ${vert.depois.total.toLocaleString('pt-BR')}`, cor: '#000', fundo: ESTILOS.proposta.color }].filter(Boolean)} />
@@ -316,11 +323,16 @@ export default function Revisao() {
                     <p>{det.motivo}</p>
                     <h4>Ação proposta</h4>
                     {det.opcoes?.length > 0 && (
-                      <div className="botoes">
+                      <div className="opcoes-correcao">
+                        <div className="opcoes-titulo">Escolha a correção ({det.opcoes.length} opções)</div>
                         {det.opcoes.map((o) => (
-                          <button key={o.tipo} className={`btn pequeno ${o.ativa ? 'ativo' : ''}`}
-                            disabled={salvando || !o.disponivel || !DECIDIVEL(det)} onClick={() => !o.ativa && escolherOpcao(o.tipo)}
-                            title={o.disponivel ? o.nome : 'Este buraco não tem escape automático'}>{OPCAO[o.tipo] || o.nome}</button>
+                          <label key={o.tipo} className={`opcao ${o.ativa ? 'ativa' : ''} ${o.disponivel ? '' : 'indisponivel'}`}
+                            title={o.disponivel ? '' : 'Este buraco não tem caminho automático até a borda livre'}>
+                            <input type="radio" name={`opcao-${det.id}`} checked={o.ativa}
+                              disabled={salvando || !o.disponivel || !DECIDIVEL(det)} onChange={() => escolherOpcao(o.tipo)} />
+                            <span><b>{OPCAO[o.tipo] || o.nome}</b><small>{explicarOpcao(o, det)}</small></span>
+                            {o.ativa && <span className="etiqueta auto">na prévia</span>}
+                          </label>
                         ))}
                       </div>
                     )}

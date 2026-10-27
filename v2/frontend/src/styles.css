@@ -277,9 +277,9 @@ input:focus, select:focus { outline: 2px solid rgba(31, 122, 77, .35); border-co
 .lista-incs .inc-topo input[type=checkbox] { margin: 0; }
 .detalhe-grade { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
 /* opções de correção (buraco interno: criar escape ou preencher) */
-.opcoes-correcao { border: 1px solid var(--borda); border-radius: 8px; padding: 8px; margin: 4px 0 8px; display: flex; flex-direction: column; gap: 6px; }
-.opcoes-titulo { font-size: 12px; font-weight: 600; color: var(--texto); }
-.opcao { flex-direction: row; align-items: center; gap: 10px; border: 1px solid var(--borda); border-radius: 6px; padding: 7px 10px; cursor: pointer; color: var(--texto); }
+.opcoes-correcao { border: 1px solid var(--borda); border-radius: 8px; padding: 8px; margin: 4px 0 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.opcoes-titulo { flex-basis: 100%; font-size: 12px; font-weight: 600; color: var(--texto); }
+.opcao { flex: 1 1 200px; flex-direction: row; align-items: center; gap: 10px; border: 1px solid var(--borda); border-radius: 6px; padding: 7px 10px; cursor: pointer; color: var(--texto); }
 .opcao:hover { border-color: var(--verde); }
 .opcao.ativa { border-color: var(--verde); background: var(--verde-claro); box-shadow: inset 3px 0 0 var(--verde); }
 .opcao.indisponivel { opacity: .55; cursor: not-allowed; }

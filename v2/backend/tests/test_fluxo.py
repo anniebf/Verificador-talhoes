@@ -364,3 +364,21 @@ def test_escape_do_buraco_prefere_borda_livre():
     novo = aplicar_op({1: talhao}, {'tipo': 'abrir_escape', 'alvo': 1, 'faixa': wkb_hex(canal)}, med)[1]
     assert novo.geom_type == 'Polygon' and not novo.interiors and novo.is_valid
     assert 180 <= talhao.area - novo.area <= 182  # corredor de 1 m x 180 m (+ a folga que passa do buraco)
+
+
+def test_proposta_antiga_de_preencher_vira_escape_na_subida(c):
+    lid = enviar(c, '/api/lotes', 'fazendas_exemplo.zip', nome='antigo')['id']
+    bur = c.get(f'/api/lotes/{lid}/inconsistencias', params={'tipo': 'buraco_interno'}).json()[0]
+    from app import servico
+    from app.db import Inconsistencia, Sessao
+    with Sessao() as s:  # como ficou um lote auditado com a regra antiga, e já aprovado
+        inc = s.get(Inconsistencia, bur['id'])
+        inc.op = {'tipo': 'preencher_buraco', 'alvo': inc.op['alvo'], 'ponto': inc.op['ponto']}
+        inc.motivo, inc.status = 'Anel interno de 1,00 ha. Até 1.0 ha: pode ser preenchido.', 'aprovada'
+        s.commit()
+    assert servico.atualizar_propostas_antigas() == 1
+    novo = c.get(f'/api/lotes/{lid}/inconsistencias', params={'tipo': 'buraco_interno'}).json()[0]
+    d = c.get(f'/api/lotes/{lid}/inconsistencias/{novo["id"]}').json()
+    assert d['operacao'] == 'Abrir o escape do buraco até a borda' and 'escape' in d['motivo']
+    assert novo['status'] != 'aprovada'  # a aprovação era do preenchimento, não vale para o escape
+    assert servico.atualizar_propostas_antigas() == 0  # já está na regra nova

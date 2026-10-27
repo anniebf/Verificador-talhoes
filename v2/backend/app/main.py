@@ -24,6 +24,9 @@ async def iniciar(_):
     criar_tabelas()
     auth.criar_admin_inicial()
     regras.garantir_padroes()
+    n = servico.atualizar_propostas_antigas()
+    if n:
+        log.info('Propostas de buraco interno atualizadas para o escape em %d fazenda(s).', n)
     yield
 
 

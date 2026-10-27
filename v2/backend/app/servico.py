@@ -227,6 +227,27 @@ def regras_do_lote(s, lote, verificacoes=None):
     return todas
 
 
+def atualizar_propostas_antigas():
+    """Na subida do sistema: fazendas com buraco interno ainda com a proposta antiga (preencher, ou manual
+    sem escape) são auditadas de novo, para todas as propostas seguirem a regra atual (abrir o escape)."""
+    from types import SimpleNamespace
+    with Sessao() as s:
+        velhas = [i for i in s.scalars(select(Inconsistencia).where(Inconsistencia.tipo == 'buraco_interno',
+                                                                    Inconsistencia.status.in_(estados.ABERTOS)))
+                  if (i.op or {}).get('tipo') != 'abrir_escape' and 'escape' not in (i.motivo or '')]
+        por_lote = {}
+        for i in velhas:
+            por_lote.setdefault(i.lote_id, set()).add(i.fazenda)
+        for lid, fazendas in por_lote.items():
+            lote = s.get(Lote, lid)
+            if lote is None:
+                continue
+            auditar(s, lote, SimpleNamespace(usuario='sistema'), fazendas=fazendas,
+                    entrada=f'Atualização da regra de buraco interno (escape): {len(fazendas)} fazenda(s)')
+            s.commit()
+        return sum(len(f) for f in por_lote.values())
+
+
 def auditar(s, lote, usuario, fazendas=None, entrada='', verificacoes=None):
     """Roda a detecção (no lote todo ou só nas fazendas dadas) e troca as ocorrências em aberto.
 
@@ -262,6 +283,9 @@ def auditar(s, lote, usuario, fazendas=None, entrada='', verificacoes=None):
         antes = conhecidas.get(a['assinatura'])
         inicial = estados.inicial(a['op'])
         status = antes.status if antes and antes.status not in ('identificada', 'em_revisao', 'nao_corrigivel') else inicial
+        # a correção proposta mudou de tipo (ex.: preencher -> abrir escape): a decisão antiga não vale para a nova
+        if antes and (antes.op or {}).get('tipo') != (a['op'] or {}).get('tipo'):
+            status, antes = inicial, None
         if status == 'aprovada' and a['op'] is None:
             status = inicial
         inc = Inconsistencia(lote_id=lote.id, versao=lote.versao_atual, fazenda=a['fazenda'], tipo=a['tipo'],
